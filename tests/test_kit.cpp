@@ -2,11 +2,13 @@
 #include "lumen/kit/controls.h"
 #include "lumen/kit/ink.h"
 #include "lumen/kit/overlays.h"
+#include "lumen/kit/text_field.h"
 
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
+#include <cstring>
 
 namespace {
 
@@ -578,6 +580,133 @@ void TestToastLifecycle() {
     toast_queue = Lumen::Kit::ToastQueue{};
 }
 
+char field_text[16]{};
+char locked_text[16] = "fixed";
+int field_changes = 0;
+int field_clicks = 0;
+
+void CountFieldClick(Lumen::Context*, Lumen::UIEvent& event, void*) {
+    if (event.type == Lumen::UIEventType::Click) ++field_clicks;
+}
+
+void BuildFieldScene(Lumen::Context* context) {
+    Lumen::NodeStyle column{};
+    column.layout = Lumen::LayoutMode::Column;
+    column.gap = 12.0f;
+    CHECK(Lumen::BeginNode(context, "column", column));
+    Lumen::NodeStyle style{};
+    style.width = 240.0f;
+    style.animate_layout = false;
+    style.event_handler = CountFieldClick;
+    if (Lumen::Kit::TextField(context, "field", field_text, sizeof(field_text), "Type here", style)) ++field_changes;
+    Lumen::NodeStyle locked = style;
+    locked.disabled = true;
+    Lumen::Kit::TextField(context, "locked", locked_text, sizeof(locked_text), nullptr, locked);
+    Lumen::EndNode(context);
+}
+
+struct FieldFixture : Fixture {
+    FieldFixture() : Fixture(BuildFieldScene, true) {}
+
+    void Type(const char* text) {
+        Lumen::InjectText(context, text);
+        Frame(1.0 / 60.0);
+    }
+
+    void Chord(ImGuiKey modifier, ImGuiKey key) {
+        Lumen::InjectKey(context, modifier, true);
+        Key(key);
+        Lumen::InjectKey(context, modifier, false);
+        Frame(1.0 / 60.0);
+    }
+};
+
+void TestTextFieldEditing() {
+    std::memset(field_text, 0, sizeof(field_text));
+    field_changes = 0;
+    field_clicks = 0;
+    FieldFixture fixture;
+    Lumen::Context* context = fixture.context;
+    const std::uint64_t column = Lumen::MakeId(Lumen::GetFrameInfo(context)->root_id, "column");
+    Lumen::Rect field{};
+    CHECK(Lumen::GetNodeRect(context, Lumen::MakeId(column, "field"), &field));
+    CHECK(Near(field.Height(), 48.0f, 0.01f));
+
+    // Focus by click, type, and the declaration reports the change once.
+    fixture.Click(Center(field));
+    CHECK(Lumen::GetNodeState(context, Lumen::MakeId(column, "field")).focused);
+    fixture.Type("Hello");
+    CHECK(std::strcmp(field_text, "Hello") == 0);
+    fixture.Frame(1.0 / 60.0);
+    CHECK(field_changes == 1);
+    fixture.Frame(1.0 / 60.0);
+    CHECK(field_changes == 1);
+
+    // Caret movement and insertion; Space types a space and does not activate the field as a click.
+    const int clicks_before = field_clicks;
+    fixture.Key(ImGuiKey_LeftArrow);
+    fixture.Key(ImGuiKey_LeftArrow);
+    fixture.Type("X");
+    CHECK(std::strcmp(field_text, "HelXlo") == 0);
+    fixture.Key(ImGuiKey_End);
+    fixture.Key(ImGuiKey_Space);
+    fixture.Type(" ");
+    CHECK(std::strcmp(field_text, "HelXlo ") == 0);
+    CHECK(field_clicks == clicks_before);
+
+    // Word movement, selection replacement and word deletion.
+    std::strcpy(field_text, "one two");
+    fixture.Key(ImGuiKey_End);
+    fixture.Chord(ImGuiMod_Ctrl, ImGuiKey_LeftArrow);
+    fixture.Type("X");
+    CHECK(std::strcmp(field_text, "one Xtwo") == 0);
+    fixture.Chord(ImGuiMod_Shift, ImGuiKey_Home);
+    fixture.Type("A");
+    CHECK(std::strcmp(field_text, "Atwo") == 0);
+    fixture.Key(ImGuiKey_End);
+    fixture.Chord(ImGuiMod_Ctrl, ImGuiKey_Backspace);
+    CHECK(field_text[0] == '\0');
+
+    // UTF-8 characters are inserted and deleted whole; the buffer never overflows.
+    fixture.Type("a\xC3\xA9");
+    CHECK(std::strcmp(field_text, "a\xC3\xA9") == 0);
+    fixture.Key(ImGuiKey_Backspace);
+    CHECK(std::strcmp(field_text, "a") == 0);
+    fixture.Type("bcdefghijklmnopqrstuvwxyz");
+    CHECK(std::strlen(field_text) == sizeof(field_text) - 1u);
+
+    // Select all, copy, clear, paste twice through the host clipboard.
+    std::strcpy(field_text, "copy");
+    fixture.Chord(ImGuiMod_Ctrl, ImGuiKey_A);
+    fixture.Chord(ImGuiMod_Ctrl, ImGuiKey_C);
+    fixture.Key(ImGuiKey_Delete);
+    CHECK(field_text[0] == '\0');
+    fixture.Chord(ImGuiMod_Ctrl, ImGuiKey_V);
+    fixture.Chord(ImGuiMod_Ctrl, ImGuiKey_V);
+    CHECK(std::strcmp(field_text, "copycopy") == 0);
+    fixture.Chord(ImGuiMod_Ctrl, ImGuiKey_A);
+    fixture.Chord(ImGuiMod_Ctrl, ImGuiKey_X);
+    CHECK(field_text[0] == '\0');
+    const char* clip = Lumen::GetClipboardText(context);
+    CHECK(clip != nullptr && std::strcmp(clip, "copycopy") == 0);
+
+    // Holding Backspace auto-repeats.
+    std::strcpy(field_text, "abcdefghij");
+    fixture.Key(ImGuiKey_End);
+    Lumen::InjectKey(context, ImGuiKey_Backspace, true);
+    fixture.Advance(0.6);
+    Lumen::InjectKey(context, ImGuiKey_Backspace, false);
+    fixture.Frame(1.0 / 60.0);
+    CHECK(std::strlen(field_text) < 7u);
+
+    // Disabled fields ignore clicks and typing.
+    Lumen::Rect locked{};
+    CHECK(Lumen::GetNodeRect(context, Lumen::MakeId(column, "locked"), &locked));
+    fixture.Click(Center(locked));
+    fixture.Type("zz");
+    CHECK(std::strcmp(locked_text, "fixed") == 0);
+}
+
 } // namespace
 
 int main() {
@@ -589,6 +718,7 @@ int main() {
     TestSwitchAndSegmented();
     TestAlertDialog();
     TestToastLifecycle();
+    TestTextFieldEditing();
     if (failures != 0) {
         std::fprintf(stderr, "%d Lumen kit test(s) failed.\n", failures);
         return EXIT_FAILURE;

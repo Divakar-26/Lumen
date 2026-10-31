@@ -471,6 +471,14 @@ void InjectText(Context* context, const char* utf8_text) noexcept {
     RequestRedraw(context);
 }
 
+const char* GetClipboardText(Context* context) noexcept {
+    return context != nullptr ? detail::BridgeGetClipboardText(context->imgui_context) : nullptr;
+}
+
+void SetClipboardText(Context* context, const char* utf8_text) noexcept {
+    if (context != nullptr) detail::BridgeSetClipboardText(context->imgui_context, utf8_text);
+}
+
 void InjectFocus(Context* context, bool focused) noexcept {
     if (context == nullptr) return;
     detail::BridgeInjectFocus(context->imgui_context, focused);

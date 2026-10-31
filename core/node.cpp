@@ -95,14 +95,22 @@ FontChoice PickFont(const Context* context, float font_size) noexcept {
     return {best, best->FontSize};
 }
 
-Vec2 MeasureText(const Context* context, const char* text, float font_size, float wrap_width) noexcept {
-    if (text == nullptr || text[0] == '\0') return {};
+Vec2 MeasureTextRange(const Context* context, const char* text, const char* end, float font_size, float wrap_width) noexcept {
+    if (text == nullptr || text == end || text[0] == '\0') return {};
     const FontChoice choice = PickFont(context, font_size);
     if (choice.font == nullptr) return {};
-    const char* end = text + std::strlen(text);
     const float wrap = wrap_width > 0.0f && wrap_width < 100000.0f ? wrap_width : 0.0f;
     const ImVec2 measured = choice.font->CalcTextSizeA(choice.size, FLT_MAX, wrap, text, end);
     return {measured.x, measured.y};
+}
+
+std::uint8_t CurrentModifiers(const ImGuiIO& io) noexcept {
+    unsigned bits = 0u;
+    if ((io.KeyMods & ImGuiMod_Ctrl) != 0) bits |= KeyModCtrl;
+    if ((io.KeyMods & ImGuiMod_Shift) != 0) bits |= KeyModShift;
+    if ((io.KeyMods & ImGuiMod_Alt) != 0) bits |= KeyModAlt;
+    if ((io.KeyMods & ImGuiMod_Super) != 0) bits |= KeyModSuper;
+    return static_cast<std::uint8_t>(bits);
 }
 
 Align EffectiveAlign(const Node* parent, const Node* child) noexcept {
@@ -1779,14 +1787,18 @@ bool FinishNodeFrame(Context* context) noexcept {
     bool escape_default_prevented = false;
     bool keyboard_activate_requested = false;
     bool keyboard_activation_default_prevented = false;
+    const std::uint8_t modifiers = CurrentModifiers(io);
     for (int key_value = static_cast<int>(ImGuiKey_NamedKey_BEGIN);
          key_value < static_cast<int>(ImGuiKey_NamedKey_END); ++key_value) {
         const ImGuiKey key = static_cast<ImGuiKey>(key_value);
-        if (ImGui::IsKeyPressed(key, false) && key_target != nullptr) {
+        if (ImGui::IsKeyPressed(key, true) && key_target != nullptr) {
             UIEvent key_down{};
             key_down.type = UIEventType::KeyDown;
             key_down.key = key;
+            key_down.modifiers = modifiers;
+            key_down.repeat = !ImGui::IsKeyPressed(key, false);
             DispatchEvent(context, key_target, key_down);
+            if (key_down.repeat) continue;
             if (key == ImGuiKey_Tab) tab_default_prevented = key_down.default_prevented;
             if (key == ImGuiKey_Escape) escape_default_prevented = key_down.default_prevented;
             if (key == ImGuiKey_Enter || key == ImGuiKey_Space) {
@@ -1798,7 +1810,18 @@ bool FinishNodeFrame(Context* context) noexcept {
             UIEvent key_up{};
             key_up.type = UIEventType::KeyUp;
             key_up.key = key;
+            key_up.modifiers = modifiers;
             DispatchEvent(context, key_target, key_up);
+        }
+    }
+    if (key_target != nullptr) {
+        for (const ImWchar character : io.InputQueueCharacters) {
+            if (character < 0x20u || character == 0x7Fu) continue;
+            UIEvent text{};
+            text.type = UIEventType::TextInput;
+            text.codepoint = character;
+            text.modifiers = modifiers;
+            DispatchEvent(context, key_target, text);
         }
     }
 
@@ -2136,6 +2159,13 @@ void EndPortal(Context* context) noexcept {
     context->building_portal_root = nullptr;
 }
 
+Vec2 MeasureText(const Context* context, const char* text, float font_size, float wrap_width,
+                 const char* text_end) noexcept {
+    if (text == nullptr || (font_size != 0.0f && !(font_size > 0.0f && std::isfinite(font_size)))) return {};
+    const float wrap = std::isfinite(wrap_width) ? wrap_width : 0.0f;
+    return MeasureTextRange(context, text, text_end != nullptr ? text_end : text + std::strlen(text), font_size, wrap);
+}
+
 bool SetFontLadder(Context* context, ImFont* const* fonts, std::size_t count) noexcept {
     if (context == nullptr || count > Context::kMaxFonts || (count > 0u && fonts == nullptr)) return false;
     for (std::size_t i = 0u; i < count; ++i) {
@@ -2243,6 +2273,57 @@ void Canvas::PopClip() noexcept {
     --clip_depth_;
 }
 
+void Canvas::BeginPath() noexcept {
+    if (draw_list_ != nullptr) draw_list_->PathClear();
+}
+
+void Canvas::MoveTo(Vec2 point) noexcept {
+    if (draw_list_ == nullptr || !IsFinite(point)) return;
+    // ImDrawList paths have a single contour; MoveTo restarts it.
+    draw_list_->PathClear();
+    draw_list_->PathLineTo(ImVec2(point.x, point.y));
+}
+
+void Canvas::LineTo(Vec2 point) noexcept {
+    if (draw_list_ != nullptr && IsFinite(point)) draw_list_->PathLineTo(ImVec2(point.x, point.y));
+}
+
+void Canvas::QuadTo(Vec2 control, Vec2 point) noexcept {
+    if (draw_list_ == nullptr || !IsFinite(control) || !IsFinite(point) || draw_list_->_Path.Size == 0) return;
+    draw_list_->PathBezierQuadraticCurveTo(ImVec2(control.x, control.y), ImVec2(point.x, point.y));
+}
+
+void Canvas::CubicTo(Vec2 control1, Vec2 control2, Vec2 point) noexcept {
+    if (draw_list_ == nullptr || !IsFinite(control1) || !IsFinite(control2) || !IsFinite(point) ||
+        draw_list_->_Path.Size == 0) return;
+    draw_list_->PathBezierCubicCurveTo(ImVec2(control1.x, control1.y), ImVec2(control2.x, control2.y),
+                                       ImVec2(point.x, point.y));
+}
+
+void Canvas::ArcTo(Vec2 center, float radius, float start_angle, float end_angle) noexcept {
+    if (draw_list_ == nullptr || !IsFinite(center) || !(radius > 0.0f) || !std::isfinite(radius) ||
+        !std::isfinite(start_angle) || !std::isfinite(end_angle)) return;
+    draw_list_->PathArcTo(ImVec2(center.x, center.y), radius, start_angle, end_angle);
+}
+
+void Canvas::Stroke(Color color, float thickness, bool closed) noexcept {
+    if (draw_list_ == nullptr) return;
+    if (!(thickness > 0.0f) || !std::isfinite(thickness) || draw_list_->_Path.Size < 2) {
+        draw_list_->PathClear();
+        return;
+    }
+    draw_list_->PathStroke(ToImU32(color, opacity_), closed ? ImDrawFlags_Closed : ImDrawFlags_None, thickness);
+}
+
+void Canvas::Fill(Color color) noexcept {
+    if (draw_list_ == nullptr) return;
+    if (draw_list_->_Path.Size < 3) {
+        draw_list_->PathClear();
+        return;
+    }
+    draw_list_->PathFillConvex(ToImU32(color, opacity_));
+}
+
 bool BeginNode(Context* context, const char* key, const NodeStyle& style, const char* text) noexcept {
     return detail::StartNode(context, key, 0u, false, NodeKind::Container, style, text, nullptr, nullptr);
 }
@@ -2252,6 +2333,11 @@ bool BeginNode(Context* context, std::uint64_t key, const NodeStyle& style, cons
 }
 
 void EndNode(Context* context) noexcept { detail::CloseNode(context); }
+
+std::uint64_t GetCurrentNodeId(const Context* context) noexcept {
+    if (context == nullptr || !context->in_frame || context->building_parent == nullptr) return 0u;
+    return context->building_parent->id;
+}
 
 bool Label(Context* context, const char* key, const char* text, const NodeStyle& style) noexcept {
     return detail::StartNode(context, key, 0u, false, NodeKind::Label, style, text, nullptr, nullptr);

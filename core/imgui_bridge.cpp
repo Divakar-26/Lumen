@@ -76,4 +76,16 @@ void BridgeInjectFocus(ImGuiContext* context, bool focused) noexcept {
     ImGui::GetIO().AddFocusEvent(focused);
 }
 
+const char* BridgeGetClipboardText(ImGuiContext* context) noexcept {
+    if (context == nullptr) return nullptr;
+    CurrentContextScope scope(context);
+    return ImGui::GetClipboardText();
+}
+
+void BridgeSetClipboardText(ImGuiContext* context, const char* text) noexcept {
+    if (context == nullptr || text == nullptr) return;
+    CurrentContextScope scope(context);
+    ImGui::SetClipboardText(text);
+}
+
 } // namespace Lumen::detail

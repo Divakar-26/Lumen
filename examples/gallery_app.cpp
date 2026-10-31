@@ -2,9 +2,12 @@
 
 #include "lumen/kit/button.h"
 #include "lumen/kit/controls.h"
+#include "lumen/kit/icons.h"
+#include "lumen/kit/text_field.h"
 
 #include <algorithm>
 #include <cmath>
+#include <cctype>
 #include <cstdio>
 
 namespace {
@@ -174,13 +177,41 @@ void PaintChart(Lumen::Context* context, Lumen::Canvas& canvas, void* data) {
     }
 }
 
-void BuildFeedItem(Lumen::Context* context, std::size_t index, void*) {
-    const Lumen::Theme theme = Lumen::GetTheme(context);
+constexpr int kFeedRows = 5000;
+
+void FeedRowText(int row, char* text, std::size_t size) {
     static const char* const kMessages[4] = {"Layout pass settled", "Theme tokens blended", "Pointer captured",
                                              "Portal painted above base tree"};
+    std::snprintf(text, size, "#%05d   %s", row, kMessages[row % 4]);
+}
+
+bool ContainsIgnoreCase(const char* text, const char* query) {
+    if (query[0] == '\0') return true;
+    for (; *text != '\0'; ++text) {
+        std::size_t i = 0u;
+        while (query[i] != '\0' && text[i] != '\0' &&
+               std::tolower(static_cast<unsigned char>(text[i])) == std::tolower(static_cast<unsigned char>(query[i]))) ++i;
+        if (query[i] == '\0') return true;
+    }
+    return false;
+}
+
+void FilterFeed(GalleryState* state) {
+    state->match_count = 0;
+    char text[96];
+    for (int row = 0; row < kFeedRows; ++row) {
+        FeedRowText(row, text, sizeof(text));
+        if (ContainsIgnoreCase(text, state->search)) state->matches[state->match_count++] = row;
+    }
+}
+
+void BuildFeedItem(Lumen::Context* context, std::size_t index, void* data) {
+    const auto* state = static_cast<const GalleryState*>(data);
+    const Lumen::Theme theme = Lumen::GetTheme(context);
+    const int row = state->matches[index];
     char text[96]{};
-    std::snprintf(text, sizeof(text), "#%05llu   %s", static_cast<unsigned long long>(index), kMessages[index % 4u]);
-    Lumen::NodeStyle style = Text(theme.caption_size, index % 4u == 0u ? theme.accent : theme.muted_text);
+    FeedRowText(row, text, sizeof(text));
+    Lumen::NodeStyle style = Text(theme.caption_size, row % 4 == 0 ? theme.accent : theme.muted_text);
     style.padding = {6.0f, 10.0f, 6.0f, 10.0f};
     style.radius = 8.0f;
     style.hover_background = theme.surface_alt;
@@ -319,6 +350,33 @@ void BuildTypography(Lumen::Context* context, std::uint64_t parent_id) {
     Lumen::Label(context, "sample-heading", "Heading · jumps over the lazy dog", Text(theme.heading_size, theme.text));
     Lumen::Label(context, "sample-body", "Body · 16 px for everything people read at length.", Text(theme.font_size, theme.text));
     Lumen::Label(context, "sample-caption", "Caption · secondary text and metadata.", Text(theme.caption_size, theme.muted_text));
+    Lumen::NodeStyle icons = Row(14.0f);
+    icons.margin.top = 4.0f;
+    Lumen::BeginNode(context, "icons", icons);
+    static const Kit::IconId kIcons[] = {Kit::IconId::Check, Kit::IconId::Close, Kit::IconId::Info, Kit::IconId::Warning,
+                                         Kit::IconId::ChevronDown, Kit::IconId::ChevronRight, Kit::IconId::Plus,
+                                         Kit::IconId::Minus, Kit::IconId::Search, Kit::IconId::Menu, Kit::IconId::Heart};
+    for (std::size_t i = 0; i < sizeof(kIcons) / sizeof(kIcons[0]); ++i) {
+        char key[12];
+        std::snprintf(key, sizeof(key), "icon-%zu", i);
+        Kit::Icon(context, key, kIcons[i], 24.0f, theme.accent);
+    }
+    Lumen::EndNode(context);
+    Lumen::EndNode(context);
+}
+
+void BuildTextInput(Lumen::Context* context, std::uint64_t parent_id, GalleryState* state) {
+    const Lumen::Theme theme = Lumen::GetTheme(context);
+    BeginSection(context, parent_id, "text-input", "Text input",
+                 "Caret, selection, word jumps (Ctrl+Arrow), Ctrl+A/C/X/V through the host clipboard, drag to select.");
+    Kit::TextField(context, "name", state->name, sizeof(state->name), "Your name");
+    char greeting[64];
+    std::snprintf(greeting, sizeof(greeting), "Hello, %s!", state->name[0] != '\0' ? state->name : "stranger");
+    Lumen::Label(context, "greeting", greeting, Text(theme.heading_size, theme.text));
+    Lumen::NodeStyle locked{};
+    locked.disabled = true;
+    static char kLocked[] = "Read-only value";
+    Kit::TextField(context, "locked", kLocked, sizeof(kLocked), nullptr, locked);
     Lumen::EndNode(context);
 }
 
@@ -366,17 +424,24 @@ void BuildDragLab(Lumen::Context* context, std::uint64_t parent_id, GalleryState
     Lumen::EndNode(context);
 }
 
-void BuildFeed(Lumen::Context* context, std::uint64_t parent_id) {
+void BuildFeed(Lumen::Context* context, std::uint64_t parent_id, GalleryState* state) {
     const Lumen::Theme theme = Lumen::GetTheme(context);
     BeginSection(context, parent_id, "feed", "Virtualized list",
-                 "5,000 logical rows; only the visible window is built each frame.");
+                 "5,000 logical rows; only the visible window is built each frame. Type to filter them.");
+    if (Kit::TextField(context, "search", state->search, sizeof(state->search), "Filter rows, e.g. pointer or #00042") ||
+        state->match_count < 0) {
+        FilterFeed(state);
+    }
+    char count[48];
+    std::snprintf(count, sizeof(count), "%d of %d rows match", state->match_count, kFeedRows);
+    Lumen::Label(context, "count", count, Text(theme.caption_size, theme.muted_text));
     Lumen::NodeStyle list{};
     list.height = 220.0f;
     list.radius = 14.0f;
     list.padding = {6.0f, 6.0f, 6.0f, 6.0f};
     list.background = theme.canvas;
     list.has_background = true;
-    Lumen::Collection(context, "rows", 5000u, 30.0f, BuildFeedItem, nullptr, list);
+    Lumen::Collection(context, "rows", static_cast<std::size_t>(std::max(0, state->match_count)), 30.0f, BuildFeedItem, state, list);
     Lumen::EndNode(context);
 }
 
@@ -446,11 +511,12 @@ void BuildLumenGallery(Lumen::Context* context, GalleryState* state) {
     BuildButtons(context, left_id, state);
     BuildSwitches(context, left_id, state);
     BuildChart(context, left_id, state);
-    BuildFeed(context, left_id);
+    BuildFeed(context, left_id, state);
     Lumen::EndNode(context);
     Lumen::BeginNode(context, "right", column);
     const std::uint64_t right_id = Lumen::MakeId(columns_id, "right");
     BuildPopups(context, right_id, state);
+    BuildTextInput(context, right_id, state);
     BuildTypography(context, right_id);
     BuildDragLab(context, right_id, state);
     Lumen::EndNode(context);

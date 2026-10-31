@@ -22,6 +22,10 @@ struct GalleryState {
     int drag_updates = 0;
     bool dragging = false;
     const char* dialog_status = "No decision yet";
+    char name[40] = "Ada";
+    char search[48]{};
+    int matches[5000]{};
+    int match_count = -1;
     float fps = 60.0f;
     Lumen::DebugStats stats{};
     Lumen::Kit::ToastQueue toasts{};

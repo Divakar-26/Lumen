@@ -62,7 +62,7 @@ Build these in `kit/`, with no access to core internals:
 ### 6. Smaller known gaps (after the above)
 - Shadow fade-out when a node drops its shadow; optionally clip the shadow to outside the node for translucent fills.
 - Text: the font ladder (`SetFontLadder`) is done. Still missing: re-baking at the framebuffer scale (`RebuildFontTexture` hook, plan 2.7) and an ellipsis/overflow policy.
-- Plan 8 items still open: focus scopes, text editing, shortcuts, drag and drop, gesture arena.
+- Plan 8 items still open: focus scopes, shortcuts, drag and drop, gesture arena. Single-line text editing exists (`Kit::TextField`); multiline, undo/redo and IME placement do not.
 - Windows and macOS builds, a second ImGui version in CI.
 
 ## How to report back

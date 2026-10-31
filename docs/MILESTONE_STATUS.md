@@ -153,3 +153,20 @@ Gallery: rewritten as a Material showcase of the Kit and engine features; the X1
 Tests: `TestIntrinsicWidthLabelDoesNotWrap`, `TestKeyboardActivatesFocusableContainer`, `TestPortalPinsOffsetAndContentHeight`, `TestLayerVisibilityAndClosing`, `TestFontLadder` (`lumen_ui_tests`); `TestSwitchAndSegmented`, `TestAlertDialog`, `TestToastLifecycle` (`lumen_kit_tests`). Mutation checks (Button-only keyboard activation, a ladder that ignores size, a countdown that ignores hover) each fail the suite. ASan/UBSan clean. Headless renders of the gallery (Material at rest, with toasts, with the dialog, Dark theme, and the lower page) were inspected.
 
 Partial / not done: switch thumb overshoot and toast motion were checked visually only by single frames, not as a video; toast enter/exit uses per-card opacity and offset, while the layer's own Presence fade (colour transition) also applies on first open and last close; the 1 px button press squish, framebuffer-scale font re-baking, ellipsis policy and non-Latin-1 glyph ranges (the gallery avoids em dashes for that reason) remain open.
+
+## Text input, Canvas paths and icons — implemented, partial against plan 8.7 / 6.3 / 6.6
+
+Engine:
+- Keyboard events: `KeyDown` now auto-repeats (`UIEvent::repeat`; Tab traversal, Escape dismissal and Enter/Space activation still trigger only on the first press). New `UIEventType::TextInput` delivers each printable character from ImGui's input queue to the focused node. Key and text events carry `UIEvent::modifiers`.
+- `GetClipboardText()`/`SetClipboardText()` (host clipboard via the ImGui bridge), public `MeasureText()` (font ladder aware, optional range end) and `GetCurrentNodeId()`.
+- `Canvas` path builder: `BeginPath`, `MoveTo`, `LineTo`, `QuadTo`, `CubicTo`, `ArcTo`, `Stroke` (open/closed) and convex `Fill`. Non-finite points and degenerate paths are ignored and the path is always cleared.
+
+Kit:
+- `TextField`: single-line UTF-8 editing as described in the README; editing state (caret, anchor, scroll, blink) lives in the state store; drawing and hit-testing share `MeasureText`, so they agree with the font ladder.
+- Icon set (`IconId`, `DrawIcon`, `Icon`) on Canvas paths; toast badges and close buttons use it, and toast heights now use `MeasureText` instead of calling ImGui directly. The Kit no longer calls ImGui functions itself.
+
+Gallery: a Text input card (live greeting, read-only field), a search field that filters the 5,000-row virtual list, and an icon row.
+
+Tests: `TestCanvasPathsMeasureAndCurrentId` (`lumen_ui_tests`); `TestTextFieldEditing` (`lumen_kit_tests`: typing, caret movement, word jumps, selection replacement, word delete, UTF-8 delete, capacity truncation, copy/cut/paste, auto-repeat, Space not activating, disabled). Mutation checks (no TextInput dispatch, no key repeat, no word movement) each fail the suite. ASan/UBSan clean. Headless renders of the filtered list, focused field with caret, icon row and icon toast badges were inspected.
+
+Not done (plan 8.7): the editor is hand-written rather than built on `imstb_textedit.h`; no undo/redo, multiline, double-click word selection, IME candidate placement or inline composition; Canvas has no dashed strokes, per-corner radii, joins/caps control or concave fill (plan 6.3); icons are a small built-in set, not compiled Lucide/Phosphor data (plan 6.6).

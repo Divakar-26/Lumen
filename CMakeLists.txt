@@ -61,8 +61,10 @@ endif()
 add_library(lumen_kit STATIC
     kit/button.cpp
     kit/controls.cpp
+    kit/icons.cpp
     kit/ink.cpp
     kit/overlays.cpp
+    kit/text_field.cpp
 )
 add_library(lumen::kit ALIAS lumen_kit)
 target_include_directories(lumen_kit PUBLIC

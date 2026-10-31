@@ -4,6 +4,7 @@
 #include <cstdio>
 #include <cmath>
 #include <cstdlib>
+#include <cstring>
 #include <limits>
 
 namespace {
@@ -1880,6 +1881,99 @@ void TestFontLadder() {
     ImGui::DestroyContext();
 }
 
+std::uint64_t observed_current_ids[3]{};
+
+void PathPainter(Lumen::Context*, Lumen::Canvas& canvas, void*) {
+    const Lumen::Rect b = canvas.Bounds();
+    canvas.BeginPath();
+    canvas.MoveTo({b.min.x + 4.0f, b.min.y + 4.0f});
+    canvas.LineTo({b.max.x - 4.0f, b.min.y + 4.0f});
+    canvas.CubicTo({b.max.x, b.min.y + 20.0f}, {b.min.x, b.min.y + 30.0f}, {b.max.x - 4.0f, b.max.y - 4.0f});
+    canvas.Stroke({17.0f / 255.0f, 201.0f / 255.0f, 93.0f / 255.0f, 1.0f}, 2.0f);
+    canvas.BeginPath();
+    canvas.MoveTo({b.min.x + 10.0f, b.max.y - 10.0f});
+    canvas.LineTo({b.min.x + 30.0f, b.max.y - 10.0f});
+    canvas.QuadTo({b.min.x + 20.0f, b.max.y - 40.0f}, {b.min.x + 10.0f, b.max.y - 10.0f});
+    canvas.Fill({90.0f / 255.0f, 30.0f / 255.0f, 140.0f / 255.0f, 1.0f});
+    // Degenerate paths are ignored without touching the draw list state.
+    canvas.MoveTo({b.min.x, b.min.y});
+    canvas.Stroke({1.0f, 1.0f, 1.0f, 1.0f}, 2.0f);
+    canvas.LineTo({std::numeric_limits<float>::quiet_NaN(), 0.0f});
+    canvas.Fill({1.0f, 1.0f, 1.0f, 1.0f});
+    canvas.BeginPath();
+    canvas.ArcTo({b.min.x + 50.0f, b.min.y + 40.0f}, -3.0f, 0.0f, 3.0f);
+    canvas.Stroke({1.0f, 1.0f, 1.0f, 1.0f}, 2.0f);
+}
+
+void BuildPathAndIdScene(Lumen::Context* context) {
+    observed_current_ids[0] = Lumen::GetCurrentNodeId(context);
+    const Lumen::CustomPaint paint{PathPainter, nullptr};
+    Lumen::NodeStyle style{};
+    style.width = 120.0f;
+    style.height = 80.0f;
+    style.custom_paint = &paint;
+    CHECK(Lumen::BeginNode(context, "paths", style));
+    observed_current_ids[1] = Lumen::GetCurrentNodeId(context);
+    Lumen::EndNode(context);
+    observed_current_ids[2] = Lumen::GetCurrentNodeId(context);
+    CHECK(Lumen::Label(context, "measured", "Measure me"));
+}
+
+int CountRgb(const ImDrawList* draw_list, int r, int g, int b) {
+    int count = 0;
+    for (int i = 0; i < draw_list->VtxBuffer.Size; ++i) {
+        const ImU32 col = draw_list->VtxBuffer[i].col;
+        if (static_cast<int>((col >> IM_COL32_R_SHIFT) & 0xFFu) == r && static_cast<int>((col >> IM_COL32_G_SHIFT) & 0xFFu) == g &&
+            static_cast<int>((col >> IM_COL32_B_SHIFT) & 0xFFu) == b && ((col >> IM_COL32_A_SHIFT) & 0xFFu) > 0u) ++count;
+    }
+    return count;
+}
+
+void TestCanvasPathsMeasureAndCurrentId() {
+    ImGui::CreateContext();
+    Lumen::Context* context = MakeContext();
+    CHECK(context != nullptr);
+    if (context == nullptr) { ImGui::DestroyContext(); return; }
+    const Lumen::Viewport viewport{Lumen::Rect{0.0f, 0.0f, 400.0f, 300.0f}, {}, {1.0f, 1.0f}};
+    CHECK(Lumen::GetCurrentNodeId(context) == 0u);
+    {
+        HostFrame host;
+        CHECK(Lumen::BeginFrame(context, viewport, 1.0f / 60.0f));
+        BuildPathAndIdScene(context);
+        ImDrawList* draw_list = ImGui::GetWindowDrawList();
+        const int clip_depth = draw_list->_ClipRectStack.Size;
+        CHECK(Lumen::EndFrame(context));
+        CHECK(draw_list->_ClipRectStack.Size == clip_depth);
+        CHECK(draw_list->_Path.Size == 0);
+        CHECK(CountRgb(draw_list, 17, 201, 93) > 20);
+        CHECK(CountRgb(draw_list, 90, 30, 140) > 6);
+        CHECK(CountRgb(draw_list, 255, 255, 255) == 0);
+    }
+    const std::uint64_t root = Lumen::GetFrameInfo(context)->root_id;
+    CHECK(observed_current_ids[0] == root);
+    CHECK(observed_current_ids[1] == Lumen::MakeId(root, "paths"));
+    CHECK(observed_current_ids[2] == root);
+    CHECK(Lumen::GetCurrentNodeId(context) == 0u);
+
+    // Public measurement matches node layout and supports ranges.
+    Lumen::Rect label{};
+    CHECK(Lumen::GetNodeRect(context, Lumen::MakeId(root, "measured"), &label));
+    const Lumen::Vec2 whole = Lumen::MeasureText(context, "Measure me", 16.0f);
+    CHECK(std::abs(whole.y - label.Height()) < 0.01f);
+    const char* text = "Measure me";
+    const Lumen::Vec2 prefix = Lumen::MeasureText(context, text, 16.0f, 0.0f, text + 7);
+    CHECK(prefix.x > 0.0f && prefix.x < whole.x);
+    CHECK(Lumen::MeasureText(context, nullptr, 16.0f).x == 0.0f);
+    CHECK(Lumen::MeasureText(context, text, -4.0f).x == 0.0f);
+
+    // Host clipboard round trip through the context's ImGui handlers.
+    Lumen::SetClipboardText(context, "copied");
+    const char* clip = Lumen::GetClipboardText(context);
+    CHECK(clip != nullptr && std::strcmp(clip, "copied") == 0);
+    Lumen::DestroyContext(context);
+    ImGui::DestroyContext();
+}
+
 int main() {
     TestViewportValidation();
     TestTreeBuildAndPaint();
@@ -1911,6 +2005,7 @@ int main() {
     TestPortalPinsOffsetAndContentHeight();
     TestLayerVisibilityAndClosing();
     TestFontLadder();
+    TestCanvasPathsMeasureAndCurrentId();
     if (failures != 0) {
         std::fprintf(stderr, "%d Lumen UI test(s) failed.\n", failures);
         return EXIT_FAILURE;

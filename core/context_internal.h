@@ -94,6 +94,8 @@ void BridgeInjectMouseWheel(ImGuiContext* context, Vec2 wheel) noexcept;
 void BridgeInjectKey(ImGuiContext* context, ImGuiKey key, bool down) noexcept;
 void BridgeInjectText(ImGuiContext* context, const char* utf8_text) noexcept;
 void BridgeInjectFocus(ImGuiContext* context, bool focused) noexcept;
+const char* BridgeGetClipboardText(ImGuiContext* context) noexcept;
+void BridgeSetClipboardText(ImGuiContext* context, const char* text) noexcept;
 }
 
 } // namespace Lumen

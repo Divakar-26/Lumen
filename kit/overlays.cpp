@@ -1,8 +1,8 @@
 #include "lumen/kit/overlays.h"
 #include "lumen/kit/button.h"
+#include "lumen/kit/icons.h"
 
 #include <algorithm>
-#include <cfloat>
 #include <cmath>
 #include <cstring>
 #include <new>
@@ -135,30 +135,26 @@ float Progress(double now, double start, const TweenSpec& spec, bool reduce_moti
     return std::isfinite(eased) ? eased : linear;
 }
 
-float TextHeight(const char* text, float size, float wrap_width) noexcept {
+float TextHeight(const Context* context, const char* text, float size, float wrap_width) noexcept {
     if (text == nullptr || text[0] == '\0') return 0.0f;
-    ImFont* font = ImGui::GetFont();
-    if (font == nullptr) return size;
-    return font->CalcTextSizeA(size, FLT_MAX, std::max(1.0f, wrap_width), text).y;
+    return MeasureText(context, text, size, std::max(1.0f, wrap_width)).y;
 }
 
-float ActionWidth(const char* action, float size) noexcept {
+float ActionWidth(const Context* context, const char* action, float size) noexcept {
     if (action == nullptr || action[0] == '\0') return 0.0f;
-    ImFont* font = ImGui::GetFont();
-    const float text = font != nullptr ? font->CalcTextSizeA(size, FLT_MAX, 0.0f, action).x : size * 4.0f;
-    return text + 2.0f * kActionPadding;
+    return MeasureText(context, action, size).x + 2.0f * kActionPadding;
 }
 
-float TextColumnWidth(const ToastQueue::Entry& entry, const Theme& theme) noexcept {
-    const float action = ActionWidth(entry.action, theme.caption_size);
+float TextColumnWidth(const Context* context, const ToastQueue::Entry& entry, const Theme& theme) noexcept {
+    const float action = ActionWidth(context, entry.action, theme.caption_size);
     return kToastWidth - 2.0f * kToastPadding - kBadgeSize - kColumnGap - kCloseSize - kColumnGap -
            (action > 0.0f ? action + kColumnGap : 0.0f);
 }
 
-float ToastHeight(const ToastQueue::Entry& entry, const Theme& theme) noexcept {
-    const float wrap = TextColumnWidth(entry, theme);
-    const float text = TextHeight(entry.title, theme.font_size, wrap) +
-                       (entry.message[0] != '\0' ? kTextGap + TextHeight(entry.message, theme.caption_size, wrap) : 0.0f);
+float ToastHeight(const Context* context, const ToastQueue::Entry& entry, const Theme& theme) noexcept {
+    const float wrap = TextColumnWidth(context, entry, theme);
+    const float text = TextHeight(context, entry.title, theme.font_size, wrap) +
+                       (entry.message[0] != '\0' ? kTextGap + TextHeight(context, entry.message, theme.caption_size, wrap) : 0.0f);
     return kToastPadding + std::max(kBadgeSize, text) + kBarGap + kBarHeight + kToastPadding;
 }
 
@@ -185,32 +181,24 @@ void PaintToastCard(Context* context, Canvas& canvas, void* user_data) noexcept 
     canvas.FillRect(fill, paint->accent, 0.5f * kBarHeight);
 }
 
+IconId StatusIcon(ToastStatus status) noexcept {
+    switch (status) {
+        case ToastStatus::Success: return IconId::Check;
+        case ToastStatus::Warning: return IconId::Warning;
+        case ToastStatus::Error: return IconId::Close;
+        case ToastStatus::Info: break;
+    }
+    return IconId::Info;
+}
+
 void PaintBadge(Context*, Canvas& canvas, void* user_data) noexcept {
     const auto* paint = static_cast<const ToastPaint*>(user_data);
     const Rect bounds = canvas.Bounds();
     const Vec2 c{0.5f * (bounds.min.x + bounds.max.x), 0.5f * (bounds.min.y + bounds.max.y)};
-    const float s = paint->badge_scale;
-    canvas.FillCircle(c, 0.5f * kBadgeSize * s, paint->accent);
-    const float k = s;
-    const float stroke = 2.2f * k;
-    switch (paint->status) {
-        case ToastStatus::Success:
-            canvas.Line({c.x - 5.5f * k, c.y + 0.5f * k}, {c.x - 1.5f * k, c.y + 4.5f * k}, paint->glyph, stroke);
-            canvas.Line({c.x - 1.5f * k, c.y + 4.5f * k}, {c.x + 6.0f * k, c.y - 4.5f * k}, paint->glyph, stroke);
-            break;
-        case ToastStatus::Error:
-            canvas.Line({c.x - 4.5f * k, c.y - 4.5f * k}, {c.x + 4.5f * k, c.y + 4.5f * k}, paint->glyph, stroke);
-            canvas.Line({c.x + 4.5f * k, c.y - 4.5f * k}, {c.x - 4.5f * k, c.y + 4.5f * k}, paint->glyph, stroke);
-            break;
-        case ToastStatus::Info:
-            canvas.FillCircle({c.x, c.y - 5.0f * k}, 1.6f * k, paint->glyph);
-            canvas.Line({c.x, c.y - 1.5f * k}, {c.x, c.y + 6.0f * k}, paint->glyph, stroke);
-            break;
-        case ToastStatus::Warning:
-            canvas.Line({c.x, c.y - 6.0f * k}, {c.x, c.y + 1.5f * k}, paint->glyph, stroke);
-            canvas.FillCircle({c.x, c.y + 5.0f * k}, 1.6f * k, paint->glyph);
-            break;
-    }
+    const float radius = 0.5f * kBadgeSize * paint->badge_scale;
+    canvas.FillCircle(c, radius, paint->accent);
+    const float glyph = radius * 1.15f;
+    DrawIcon(canvas, StatusIcon(paint->status), Rect{c.x - glyph, c.y - glyph, 2.0f * glyph, 2.0f * glyph}, paint->glyph, 2.6f);
 }
 
 void PaintClose(Context* context, Canvas& canvas, void*) noexcept {
@@ -218,9 +206,8 @@ void PaintClose(Context* context, Canvas& canvas, void*) noexcept {
     const bool hovered = GetNodeState(context, canvas.NodeId()).hovered;
     const Rect b = canvas.Bounds();
     const Vec2 c{0.5f * (b.min.x + b.max.x), 0.5f * (b.min.y + b.max.y)};
-    const Color color = WithAlpha(theme.inverse_on_surface, hovered ? 1.0f : 0.7f);
-    canvas.Line({c.x - 5.0f, c.y - 5.0f}, {c.x + 5.0f, c.y + 5.0f}, color, 1.8f);
-    canvas.Line({c.x + 5.0f, c.y - 5.0f}, {c.x - 5.0f, c.y + 5.0f}, color, 1.8f);
+    DrawIcon(canvas, IconId::Close, Rect{c.x - 8.0f, c.y - 8.0f, 16.0f, 16.0f},
+             WithAlpha(theme.inverse_on_surface, hovered ? 1.0f : 0.7f), 2.2f);
 }
 
 Color StatusAccent(const Theme& theme, ToastStatus status) noexcept {
@@ -447,7 +434,7 @@ std::uint64_t Toasts(Context* context, ToastQueue& queue) noexcept {
     float heights[ToastQueue::kCapacity]{};
     float total = 0.0f;
     for (int i = 0; i < queue.count; ++i) {
-        heights[i] = ToastHeight(queue.entries[i], theme);
+        heights[i] = ToastHeight(context, queue.entries[i], theme);
         total += heights[i] + (i > 0 ? kToastGap : 0.0f);
     }
 

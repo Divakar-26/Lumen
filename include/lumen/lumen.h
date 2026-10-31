@@ -99,6 +99,11 @@ void InjectKey(Context* context, ImGuiKey key, bool down) noexcept;
 void InjectText(Context* context, const char* utf8_text) noexcept;
 void InjectFocus(Context* context, bool focused) noexcept;
 
+// Host clipboard through the context's ImGui platform handlers. The returned text is owned by the
+// host and valid until the next clipboard call.
+const char* GetClipboardText(Context* context) noexcept;
+void SetClipboardText(Context* context, const char* utf8_text) noexcept;
+
 } // namespace Lumen
 
 #include "lumen/motion.h"
