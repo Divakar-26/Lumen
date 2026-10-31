@@ -65,7 +65,7 @@ Only `core/imgui_bridge.cpp` includes `imgui_internal.h`. Core rendering output 
 ### Foundation and motion
 
 - `lumen::core` static library, host-owned ImGui-context contract, frame protocol and redraw demand.
-- Fixed-capacity frame arena and typed persistent state pool with stable IDs, pinning and expiry.
+- Chunked frame arena (first chunk `Config::frame_arena_bytes`, growing up to `frame_arena_max_bytes` and keeping its chunks, so steady-state frames allocate nothing) and typed persistent state pool with stable IDs, pinning and expiry.
 - Geometry primitives, real/manual clocks and input event injection.
 - Easing families (including cubic Bézier and steps), typed tweens/springs, OKLab color interpolation, keyframes, timelines, controllers and per-context scheduling. Non-finite custom-curve results fall back to linear progress instead of contaminating animation state.
 - Bounded `Router` navigation stack with copied route names, replace/push/pop semantics, explicit depth/overflow checks, bounded name scanning, and alias-safe replacement (`Replace(Current())`).
@@ -92,6 +92,8 @@ Only `core/imgui_bridge.cpp` includes `imgui_internal.h`. Core rendering output 
 - `GetNodeRect()` reports computed node geometry from the last completed layout for integrations and tests.
 - `Collection`: fixed-height vertical virtualization with stable index-keyed item wrappers, cache window and full logical scroll extent. The test suite exercises 100,000 logical items while building only the visible window.
 - Font ladder (`SetFontLadder`, plan 2.7): the host registers up to 8 baked fonts of one family; text snaps to the nearest rung and is measured and drawn at that rung's baked size, so it is never resampled. Without a ladder the current ImGui font is scaled. `Theme` has `caption_size`, `font_size`, `heading_size` and `title_size` type tokens.
+- Scrolling: wheel input moves a logical target and the displayed offset eases toward it at `Theme::scroll_smoothing` (0 or reduced motion = instant). Overflowing scroll containers draw overlay scrollbar thumbs (`Theme::scrollbar`, `scrollbar_thickness`) that fade in while hovered or just scrolled. Thumbs are not draggable yet.
+- `Canvas::FillRectGradient()`: rounded linear gradients at any angle, interpolated in OKLab per vertex.
 - `MeasureText()` exposes the same measurement nodes use (font ladder included, optional range end), and `Canvas` has a path builder (`MoveTo`/`LineTo`/`QuadTo`/`CubicTo`/`ArcTo`, `Stroke`, convex `Fill`) over `ImDrawList`'s path API.
 - Keyboard: the focused node receives `KeyDown` with auto-repeat (`UIEvent::repeat`), `KeyUp`, and `TextInput` events (one codepoint each, from the host's text queue); every key/text event carries `UIEvent::modifiers` (`KeyModCtrl/Shift/Alt/Super`). `GetClipboardText()`/`SetClipboardText()` reach the host clipboard through ImGui. `GetCurrentNodeId()` returns the innermost open node.
 - Labels laid out at exactly their measured width draw on one line (ImGui's word wrap would otherwise break the last word).

@@ -300,6 +300,7 @@ void TestArenaAndStateCapacityLimits() {
     ImGui::CreateContext();
     Lumen::Config config;
     config.frame_arena_bytes = 32;
+    config.frame_arena_max_bytes = 32;
     config.state_capacity = 16;
     config.max_state_bytes = 64;
     config.state_ttl_frames = 120;

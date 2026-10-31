@@ -17,7 +17,10 @@ struct Context;
 class Controller;
 
 struct Config {
+    // The frame arena starts with one frame_arena_bytes chunk and grows by further chunks (kept for
+    // later frames) up to frame_arena_max_bytes; allocations beyond the cap fail.
     std::size_t frame_arena_bytes = 1024u * 1024u;
+    std::size_t frame_arena_max_bytes = 16u * 1024u * 1024u;
     std::size_t state_capacity = 8192u;
     std::size_t max_state_bytes = 256u;
     std::uint32_t state_ttl_frames = 120u;
@@ -49,6 +52,7 @@ struct DebugStats {
     std::uint64_t state_capacity_exhaustions = 0;
     std::size_t state_entries = 0;
     std::size_t arena_bytes_used = 0;
+    std::size_t arena_reserved_bytes = 0;
     std::size_t nodes_built = 0;
     std::size_t nodes_painted = 0;
     std::uint64_t duplicate_node_ids = 0;

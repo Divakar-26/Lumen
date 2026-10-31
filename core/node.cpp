@@ -292,10 +292,10 @@ bool ClampScrollOffsets(Context* context, Node* node) noexcept {
         if (memory != nullptr) {
             const Rect content = InsetRect(node->target_rect, node->style.padding);
             const Vec2 old = memory->offset;
-            if (node->style.scrollable_x) memory->offset.x = Clamp(memory->offset.x, 0.0f, std::max(0.0f, node->content_extent.x - content.Width()));
-            else memory->offset.x = 0.0f;
-            if (node->style.scrollable_y) memory->offset.y = Clamp(memory->offset.y, 0.0f, std::max(0.0f, node->content_extent.y - content.Height()));
-            else memory->offset.y = 0.0f;
+            const Vec2 max_offset{node->style.scrollable_x ? std::max(0.0f, node->content_extent.x - content.Width()) : 0.0f,
+                                  node->style.scrollable_y ? std::max(0.0f, node->content_extent.y - content.Height()) : 0.0f};
+            memory->offset = {Clamp(memory->offset.x, 0.0f, max_offset.x), Clamp(memory->offset.y, 0.0f, max_offset.y)};
+            memory->target = {Clamp(memory->target.x, 0.0f, max_offset.x), Clamp(memory->target.y, 0.0f, max_offset.y)};
             node->scroll_offset = memory->offset;
             changed = changed || old.x != memory->offset.x || old.y != memory->offset.y;
         }
@@ -647,6 +647,32 @@ Node* FindScrollTarget(Node* node, Vec2 position, Rect clip, std::size_t depth, 
     return target;
 }
 
+bool ScrollIsInstant(const Context* context) noexcept {
+    return context->reduce_motion || !(context->theme.scroll_smoothing > 0.0f);
+}
+
+// Eases each displayed scroll offset toward its target once per frame.
+void AdvanceScrolling(Context* context, Node* node, std::size_t depth = 0u) noexcept {
+    if (depth > 512u) return;
+    if (node->style.scrollable_x || node->style.scrollable_y) {
+        if (ScrollMemory* memory = State<ScrollMemory>(context, MakeId(node->id, "scroll-offset"))) {
+            const float dt = context->frame_info.delta_seconds * context->motion_time_scale;
+            const float factor = ScrollIsInstant(context) || !(dt > 0.0f) ? 1.0f
+                : 1.0f - std::exp(-context->theme.scroll_smoothing * dt);
+            const auto step = [factor](float& value, float target) {
+                value += (target - value) * factor;
+                if (std::fabs(target - value) < 0.25f) value = target;
+            };
+            step(memory->offset.x, memory->target.x);
+            step(memory->offset.y, memory->target.y);
+            if (memory->offset.x != memory->target.x || memory->offset.y != memory->target.y) context->needs_frame = true;
+        }
+    }
+    for (Node* child = node->first_child; child != nullptr; child = child->next_sibling) {
+        AdvanceScrolling(context, child, depth + 1u);
+    }
+}
+
 void ApplyWheel(Context* context, Node* target, const ImGuiIO& io, const Theme& theme) noexcept {
     if (context == nullptr || target == nullptr || (io.MouseWheel == 0.0f && io.MouseWheelH == 0.0f)) return;
     float remaining_x = -io.MouseWheelH * theme.spacing * theme.scroll_wheel_multiplier;
@@ -657,19 +683,25 @@ void ApplyWheel(Context* context, Node* target, const ImGuiIO& io, const Theme& 
         ScrollMemory* memory = State<ScrollMemory>(context, MakeId(current->id, "scroll-offset"));
         if (memory == nullptr) continue;
         const Rect content = InsetRect(current->target_rect, current->style.padding);
+        const Vec2 before = memory->target;
         if (current->style.scrollable_x && std::fabs(remaining_x) > 0.001f) {
-            const float old = memory->offset.x;
             const float max_offset = std::max(0.0f, current->content_extent.x - content.Width());
-            memory->offset.x = Clamp(old + remaining_x, 0.0f, max_offset);
-            remaining_x -= memory->offset.x - old;
-            changed = changed || memory->offset.x != old;
+            memory->target.x = Clamp(before.x + remaining_x, 0.0f, max_offset);
+            remaining_x -= memory->target.x - before.x;
         }
         if (current->style.scrollable_y && std::fabs(remaining_y) > 0.001f) {
-            const float old = memory->offset.y;
             const float max_offset = std::max(0.0f, current->content_extent.y - content.Height());
-            memory->offset.y = Clamp(old + remaining_y, 0.0f, max_offset);
-            remaining_y -= memory->offset.y - old;
-            changed = changed || memory->offset.y != old;
+            memory->target.y = Clamp(before.y + remaining_y, 0.0f, max_offset);
+            remaining_y -= memory->target.y - before.y;
+        }
+        if (memory->target.x != before.x || memory->target.y != before.y) {
+            memory->last_activity = context->frame_info.time_seconds;
+            if (ScrollIsInstant(context)) {
+                memory->offset = memory->target;
+                changed = true;
+            } else {
+                RequestRedraw(context);
+            }
         }
         if (std::fabs(remaining_x) <= 0.001f && std::fabs(remaining_y) <= 0.001f) break;
     }
@@ -1123,6 +1155,65 @@ ResolvedShadow ResolveNodeShadow(Context* context, Node* node, const Theme& them
     return shadow;
 }
 
+struct ScrollbarThumbs {
+    Rect vertical{};
+    Rect horizontal{};
+    Color color{};
+    float radius = 0.0f;
+    bool has_vertical = false;
+    bool has_horizontal = false;
+};
+
+constexpr double kScrollbarLinger = 0.8;
+constexpr float kScrollbarMinThumb = 24.0f;
+
+// Overlay thumbs for an overflowing scroll container. Visible while the pointer is over it or for a
+// moment after it scrolled; the fade uses the colour transition. Idempotent within a frame.
+ScrollbarThumbs ResolveScrollbars(Context* context, Node* node) noexcept {
+    ScrollbarThumbs thumbs{};
+    if ((!node->style.scrollable_x && !node->style.scrollable_y) || node->rect.IsEmpty()) return thumbs;
+    const Theme& theme = context->theme;
+    const float thickness = theme.scrollbar_thickness;
+    if (!(thickness > 0.0f) || !std::isfinite(thickness)) return thumbs;
+    const Rect content = InsetRect(node->rect, node->style.padding);
+    const bool overflow_x = node->style.scrollable_x && node->content_extent.x > content.Width() + 0.5f;
+    const bool overflow_y = node->style.scrollable_y && node->content_extent.y > content.Height() + 0.5f;
+    if (!overflow_x && !overflow_y) return thumbs;
+    const ScrollMemory* memory = State<ScrollMemory>(context, MakeId(node->id, "scroll-offset"));
+    if (memory == nullptr) return thumbs;
+
+    const bool recent = context->frame_info.time_seconds - memory->last_activity < kScrollbarLinger;
+    const bool inside = context->pointer_position_valid && node->rect.Contains(context->last_pointer_position);
+    if (recent) context->needs_frame = true;
+    const float alpha = Animate(context, MakeId(node->id, "scrollbar-alpha"), (recent || inside) ? 1.0f : 0.0f,
+                                theme.color_transition);
+    if (!(alpha > 0.01f)) return thumbs;
+    thumbs.color = WithOpacity(theme.scrollbar, Clamp(alpha, 0.0f, 1.0f) * node->resolved_opacity);
+    thumbs.radius = 0.5f * thickness;
+
+    const float margin = 0.5f * thickness;
+    const auto thumb = [](float track_min, float track_max, float view, float extent, float offset) {
+        const float length = std::max(0.0f, track_max - track_min);
+        const float size = std::min(length, std::max(kScrollbarMinThumb, length * view / std::max(1.0f, extent)));
+        const float range = std::max(1.0f, extent - view);
+        const float start = track_min + (length - size) * Clamp(offset / range, 0.0f, 1.0f);
+        return Vec2{start, start + size};
+    };
+    if (overflow_y) {
+        const Vec2 span = thumb(node->rect.min.y + margin, node->rect.max.y - margin - (overflow_x ? thickness + margin : 0.0f),
+                                content.Height(), node->content_extent.y, node->scroll_offset.y);
+        thumbs.vertical = Rect{{node->rect.max.x - margin - thickness, span.x}, {node->rect.max.x - margin, span.y}};
+        thumbs.has_vertical = !thumbs.vertical.IsEmpty();
+    }
+    if (overflow_x) {
+        const Vec2 span = thumb(node->rect.min.x + margin, node->rect.max.x - margin - (overflow_y ? thickness + margin : 0.0f),
+                                content.Width(), node->content_extent.x, node->scroll_offset.x);
+        thumbs.horizontal = Rect{{span.x, node->rect.max.y - margin - thickness}, {span.y, node->rect.max.y - margin}};
+        thumbs.has_horizontal = !thumbs.horizontal.IsEmpty();
+    }
+    return thumbs;
+}
+
 std::size_t CountRenderCommands(Context* context, Node* node, std::size_t depth) noexcept {
     if (depth > 512u || node->resolved_opacity <= 0.0f) return 0u;
     bool has_fill = false;
@@ -1139,6 +1230,8 @@ std::size_t CountRenderCommands(Context* context, Node* node, std::size_t depth)
     for (Node* child = node->first_child; child != nullptr; child = child->next_sibling) {
         count += CountRenderCommands(context, child, depth + 1u);
     }
+    const ScrollbarThumbs thumbs = ResolveScrollbars(context, node);
+    count += (thumbs.has_vertical ? 1u : 0u) + (thumbs.has_horizontal ? 1u : 0u);
     return count;
 }
 
@@ -1276,6 +1369,16 @@ void BuildRenderCommands(Context* context, Node* node, const Theme& theme, std::
     if (clip_children && node->first_child != nullptr) {
         RenderCommand command{};
         command.type = RenderCommandType::PopClip;
+        PushCommand(context, command, cursor);
+    }
+    const ScrollbarThumbs thumbs = ResolveScrollbars(context, node);
+    for (int axis = 0; axis < 2; ++axis) {
+        if (!(axis == 0 ? thumbs.has_vertical : thumbs.has_horizontal)) continue;
+        RenderCommand command{};
+        command.type = RenderCommandType::FillRect;
+        command.rect = axis == 0 ? thumbs.vertical : thumbs.horizontal;
+        command.color = thumbs.color;
+        command.radius = thumbs.radius;
         PushCommand(context, command, cursor);
     }
 }
@@ -1506,6 +1609,8 @@ Theme DefaultTheme(ThemeKind kind) noexcept {
     theme.reflow_transition.duration_seconds = 0.3;
     theme.reflow_transition.curve = Curve::Standard();
     theme.layout_spring = (kind == ThemeKind::HighContrast) ? SpringSpec::Snappy() : SpringSpec::Smooth();
+    theme.scroll_smoothing = 18.0f;
+    theme.scrollbar_thickness = 6.0f;
     if (kind == ThemeKind::Material) {
         // Material 3 baseline (light), per docs/GPT_LOOK_INSTRUCTIONS.md.
         theme.canvas = Hex(0xFEF7FF);
@@ -1557,6 +1662,7 @@ Theme DefaultTheme(ThemeKind kind) noexcept {
         theme.reflow_transition.duration_seconds = 0.38;
         theme.reflow_transition.curve = Curve::CubicBezier(0.4f, 0.0f, 0.2f, 1.0f);
     }
+    theme.scrollbar = Color{theme.text.r, theme.text.g, theme.text.b, kind == ThemeKind::HighContrast ? 0.7f : 0.35f};
     return theme;
 }
 
@@ -1649,6 +1755,10 @@ bool FinishNodeFrame(Context* context) noexcept {
     }
     ResolveInherited(context->root_node, context->root_node, context->theme);
     MeasureNode(context, context->root_node, context->root_node->target_rect.Width(), context->theme);
+    AdvanceScrolling(context, context->root_node);
+    for (std::size_t i = 0u; i < context->portal_count; ++i) {
+        if (context->portal_nodes[i] != nullptr) AdvanceScrolling(context, context->portal_nodes[i]);
+    }
     LoadScrollOffsets(context, context->root_node);
     LayoutChildren(context, context->root_node, context->theme, 0u);
     if (ClampScrollOffsets(context, context->root_node)) {
@@ -2231,6 +2341,25 @@ void Canvas::FillRect(Rect rect, Color color, float radius) noexcept {
                               ToImU32(color, opacity_), std::isfinite(radius) ? std::max(0.0f, radius) : 0.0f);
 }
 
+void Canvas::FillRectGradient(Rect rect, Color start, Color end, float angle, float radius) noexcept {
+    if (draw_list_ == nullptr || !IsFinite(rect) || rect.IsEmpty() || !std::isfinite(angle)) return;
+    const int first = draw_list_->VtxBuffer.Size;
+    draw_list_->AddRectFilled(ImVec2(rect.min.x, rect.min.y), ImVec2(rect.max.x, rect.max.y), IM_COL32_WHITE,
+                              std::isfinite(radius) ? std::max(0.0f, radius) : 0.0f);
+    // Project every vertex onto the gradient axis through the rect centre; the axis spans the rect's
+    // extent in that direction so both ends reach the corners.
+    const Vec2 axis{std::cos(angle), std::sin(angle)};
+    const Vec2 center{0.5f * (rect.min.x + rect.max.x), 0.5f * (rect.min.y + rect.max.y)};
+    const float half = 0.5f * (std::fabs(axis.x) * rect.Width() + std::fabs(axis.y) * rect.Height());
+    for (int i = first; i < draw_list_->VtxBuffer.Size; ++i) {
+        ImDrawVert& vertex = draw_list_->VtxBuffer[i];
+        const float along = (vertex.pos.x - center.x) * axis.x + (vertex.pos.y - center.y) * axis.y;
+        const float t = half > 0.0f ? Clamp(0.5f + 0.5f * along / half, 0.0f, 1.0f) : 0.0f;
+        const float coverage = static_cast<float>((vertex.col >> IM_COL32_A_SHIFT) & 0xFFu) / 255.0f;
+        vertex.col = ToImU32(LerpColorOKLab(start, end, t), opacity_ * coverage);
+    }
+}
+
 void Canvas::StrokeRect(Rect rect, Color color, float radius, float thickness) noexcept {
     if (draw_list_ == nullptr || !IsFinite(rect) || rect.IsEmpty() || !(thickness > 0.0f) || !std::isfinite(thickness)) return;
     draw_list_->AddRect(ImVec2(rect.min.x, rect.min.y), ImVec2(rect.max.x, rect.max.y), ToImU32(color, opacity_),
@@ -2470,7 +2599,7 @@ bool Collection(Context* context, const char* key, std::size_t item_count, float
 Vec2 GetScrollOffset(Context* context, std::uint64_t scroll_node_id) noexcept {
     if (context == nullptr || !context->in_frame || scroll_node_id == 0u) return {};
     ScrollMemory* memory = State<ScrollMemory>(context, MakeId(scroll_node_id, "scroll-offset"));
-    return memory != nullptr ? memory->offset : Vec2{};
+    return memory != nullptr ? memory->target : Vec2{};
 }
 
 bool SetScrollOffset(Context* context, std::uint64_t scroll_node_id, Vec2 offset) noexcept {
@@ -2478,6 +2607,7 @@ bool SetScrollOffset(Context* context, std::uint64_t scroll_node_id, Vec2 offset
     ScrollMemory* memory = State<ScrollMemory>(context, MakeId(scroll_node_id, "scroll-offset"));
     if (memory == nullptr) return false;
     memory->offset = {std::max(0.0f, offset.x), std::max(0.0f, offset.y)};
+    memory->target = memory->offset;
     RequestRedraw(context);
     return true;
 }

@@ -7,7 +7,12 @@ namespace Lumen {
 
 enum class NodeKind : std::uint8_t { Root, Container, Label, Button, Image };
 
-struct ScrollMemory { Vec2 offset{}; };
+// offset is what is displayed; target is the logical position the wheel and clamping move.
+struct ScrollMemory {
+    Vec2 offset{};
+    Vec2 target{};
+    double last_activity = -1.0e9;
+};
 struct ImageData { ImTextureID texture{}; Vec2 source_size{}; ImageFit fit = ImageFit::Contain; };
 
 enum class RenderCommandType : std::uint8_t { FillRect, StrokeRect, Text, Image, PushClip, PopClip, Shadow, Paint };

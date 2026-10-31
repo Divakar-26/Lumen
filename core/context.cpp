@@ -101,6 +101,7 @@ Theme BlendTheme(const Theme& from, const Theme& to, float progress) noexcept {
     LUMEN_BLEND_COLOR(shadow);
     LUMEN_BLEND_COLOR(scrim);
     LUMEN_BLEND_COLOR(ink);
+    LUMEN_BLEND_COLOR(scrollbar);
     LUMEN_BLEND_FLOAT(spacing);
     LUMEN_BLEND_FLOAT(radius);
     LUMEN_BLEND_FLOAT(caption_size);
@@ -112,6 +113,8 @@ Theme BlendTheme(const Theme& from, const Theme& to, float progress) noexcept {
     LUMEN_BLEND_FLOAT(focus_ring_outset);
     LUMEN_BLEND_FLOAT(minimum_hit_target);
     LUMEN_BLEND_FLOAT(scroll_wheel_multiplier);
+    LUMEN_BLEND_FLOAT(scroll_smoothing);
+    LUMEN_BLEND_FLOAT(scrollbar_thickness);
 #undef LUMEN_BLEND_COLOR
 #undef LUMEN_BLEND_FLOAT
     result.button_padding = {
@@ -192,7 +195,7 @@ Context* CreateContext(const Config& config) noexcept {
     context->theme_from = context->theme;
     context->theme_target = context->theme;
 
-    if (!context->frame_arena.Initialize(config.frame_arena_bytes) ||
+    if (!context->frame_arena.Initialize(config.frame_arena_bytes, config.frame_arena_max_bytes) ||
         !context->state_store.Initialize(config.state_capacity, config.max_state_bytes) ||
         !context->motion_scheduler.Initialize(config.motion_capacity)) {
         context->~Context();
@@ -304,6 +307,7 @@ bool EndFrame(Context* context) noexcept {
     context->stats.nodes_painted = context->nodes_painted;
     context->stats.duplicate_node_ids = context->duplicate_node_ids;
     context->stats.arena_bytes_used = context->frame_arena.Used();
+    context->stats.arena_reserved_bytes = context->frame_arena.Reserved();
     context->stats.arena_high_water_bytes = context->frame_arena.HighWater();
     context->stats.arena_failed_allocations = context->frame_arena.FailedAllocations();
     context->in_frame = false;
@@ -398,6 +402,7 @@ DebugStats GetDebugStats(const Context* context) noexcept {
     stats.nodes_painted = context->nodes_painted;
     stats.duplicate_node_ids = context->duplicate_node_ids;
     stats.arena_bytes_used = context->frame_arena.Used();
+    stats.arena_reserved_bytes = context->frame_arena.Reserved();
     stats.arena_high_water_bytes = context->frame_arena.HighWater();
     stats.arena_failed_allocations = context->frame_arena.FailedAllocations();
     stats.in_frame = context->in_frame;

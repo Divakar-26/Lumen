@@ -54,7 +54,7 @@ Build these in `kit/`, with no access to core internals:
 - Every Kit widget takes its look from a theme token set (add a Material-like theme next to Dark, Light and High Contrast; do not hard-code it in widgets).
 - Gallery: replace the diagnostics-style panels with a page that shows these widgets. A person should open it and want to click things.
 
-### 5. Fix the memory budget properly (before the tree gets bigger)
+### 5. Fix the memory budget properly (before the tree gets bigger) — done with option B (chunked arena); see MILESTONE_STATUS
 - Option A: split `Node` into hot data (id, links, rect, flags) and cold data (full style) so layout-only nodes cost less.
 - Option B: chunked arena that grows up to a configured cap and keeps its chunks between frames (still zero steady-state allocation). Keep `arena_failed_allocations` semantics at the cap.
 - Either way, tighten `test_ui` to assert a bytes-per-node number, not just "under 1 MiB".

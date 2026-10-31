@@ -847,6 +847,8 @@ void TestTwoThousandNodeGrid() {
     CHECK(stats.arena_failed_allocations == 0u);
     CHECK(stats.state_capacity_exhaustions == 0u);
     CHECK(stats.arena_bytes_used < 1024u * 1024u);
+    CHECK(stats.arena_reserved_bytes == 1024u * 1024u);
+    CHECK(stats.arena_bytes_used <= 525u * stats.nodes_built);
     const double bytes_per_node = static_cast<double>(stats.arena_bytes_used) /
                                   static_cast<double>(stats.nodes_built);
     std::printf("Arena budget: %zu bytes / %zu nodes (%.2f bytes per node)\n",
@@ -1974,6 +1976,234 @@ void TestCanvasPathsMeasureAndCurrentId() {
     ImGui::DestroyContext();
 }
 
+int wide_cell_count = 10000;
+
+void BuildWideList(Lumen::Context* context) {
+    Lumen::NodeStyle list{};
+    list.height = 200.0f;
+    list.scrollable_y = true;
+    list.clip_children = true;
+    if (!Lumen::BeginNode(context, "wide-list", list)) return;
+    for (int i = 1; i <= wide_cell_count; ++i) {
+        if (!Lumen::Label(context, static_cast<std::uint64_t>(i), "row")) break;
+    }
+    Lumen::EndNode(context);
+}
+
+// The frame arena grows past its first chunk for a large frame, keeps the chunks so the next
+// identical frame reserves nothing new, and still fails cleanly at the configured cap.
+void TestFrameArenaGrowsAndHonoursCap() {
+    ImGui::CreateContext();
+    Lumen::Context* context = MakeContext();
+    CHECK(context != nullptr);
+    if (context == nullptr) { ImGui::DestroyContext(); return; }
+    const Lumen::Viewport viewport{Lumen::Rect{0.0f, 0.0f, 400.0f, 300.0f}, {}, {1.0f, 1.0f}};
+    wide_cell_count = 10000;
+    CHECK(RunFrame(context, viewport, BuildWideList));
+    Lumen::DebugStats stats = Lumen::GetDebugStats(context);
+    CHECK(stats.nodes_built == 10001u);
+    CHECK(stats.arena_failed_allocations == 0u);
+    CHECK(stats.arena_bytes_used > 1024u * 1024u);
+    CHECK(stats.arena_reserved_bytes >= stats.arena_bytes_used);
+    CHECK(stats.arena_reserved_bytes <= 16u * 1024u * 1024u);
+    const std::size_t reserved = stats.arena_reserved_bytes;
+    CHECK(RunFrame(context, viewport, BuildWideList));
+    stats = Lumen::GetDebugStats(context);
+    CHECK(stats.arena_reserved_bytes == reserved);
+    CHECK(stats.arena_failed_allocations == 0u);
+    // A small frame after a large one reuses the first chunk.
+    wide_cell_count = 10;
+    CHECK(RunFrame(context, viewport, BuildWideList));
+    stats = Lumen::GetDebugStats(context);
+    CHECK(stats.arena_bytes_used < 64u * 1024u && stats.arena_reserved_bytes == reserved);
+    Lumen::DestroyContext(context);
+
+    Lumen::Config capped{};
+    capped.frame_arena_max_bytes = capped.frame_arena_bytes;
+    context = Lumen::CreateContext(capped);
+    CHECK(context != nullptr);
+    if (context == nullptr) { ImGui::DestroyContext(); return; }
+    wide_cell_count = 10000;
+    bool ended = true;
+    RunFrame(context, viewport, BuildWideList, &ended);
+    stats = Lumen::GetDebugStats(context);
+    CHECK(!ended);
+    CHECK(stats.arena_failed_allocations > 0u);
+    CHECK(stats.arena_reserved_bytes == capped.frame_arena_bytes);
+    wide_cell_count = 10000;
+    Lumen::DestroyContext(context);
+    ImGui::DestroyContext();
+}
+
+void BuildSmoothList(Lumen::Context* context) {
+    Lumen::NodeStyle list{};
+    list.height = 200.0f;
+    list.width = 300.0f;
+    list.scrollable_y = true;
+    list.clip_children = true;
+    list.gap = 0.0f;
+    list.animate_layout = false;
+    CHECK(Lumen::BeginNode(context, "smooth", list));
+    for (std::uint64_t i = 0; i < 40u; ++i) {
+        Lumen::NodeStyle row{};
+        row.height = 30.0f;
+        row.animate_layout = false;
+        CHECK(Lumen::BeginNode(context, i, row));
+        Lumen::EndNode(context);
+    }
+    Lumen::EndNode(context);
+}
+
+struct ThumbSample {
+    int vertices = 0;
+    Lumen::Rect bounds{{1.0e9f, 1.0e9f}, {-1.0e9f, -1.0e9f}};
+};
+
+ThumbSample RunSmoothFrame(Lumen::Context* context, Lumen::ManualClock& clock, double step) {
+    clock.Advance(step);
+    const Lumen::Viewport viewport{Lumen::Rect{0.0f, 0.0f, 400.0f, 300.0f}, {}, {1.0f, 1.0f}};
+    ThumbSample sample{};
+    HostFrame host;
+    CHECK(Lumen::BeginFrame(context, viewport, static_cast<float>(step)));
+    BuildSmoothList(context);
+    CHECK(Lumen::EndFrame(context));
+    const ImDrawList* draw_list = ImGui::GetWindowDrawList();
+    for (int i = 0; i < draw_list->VtxBuffer.Size; ++i) {
+        const ImDrawVert& v = draw_list->VtxBuffer[i];
+        if ((v.col & ~IM_COL32_A_MASK) != (IM_COL32(26, 230, 51, 0)) || ((v.col >> IM_COL32_A_SHIFT) & 0xFFu) < 8u) continue;
+        ++sample.vertices;
+        sample.bounds.min.x = std::min(sample.bounds.min.x, v.pos.x);
+        sample.bounds.min.y = std::min(sample.bounds.min.y, v.pos.y);
+        sample.bounds.max.x = std::max(sample.bounds.max.x, v.pos.x);
+        sample.bounds.max.y = std::max(sample.bounds.max.y, v.pos.y);
+    }
+    return sample;
+}
+
+float DisplayedScroll(Lumen::Context* context) {
+    const std::uint64_t list = Lumen::MakeId(Lumen::GetFrameInfo(context)->root_id, "smooth");
+    Lumen::Rect list_rect{};
+    Lumen::Rect first{};
+    CHECK(Lumen::GetNodeRect(context, list, &list_rect));
+    CHECK(Lumen::GetNodeRect(context, Lumen::MakeId(list, std::uint64_t{0}), &first));
+    return list_rect.min.y - first.min.y;
+}
+
+void TestSmoothScrollingAndOverlayScrollbars() {
+    ImGui::CreateContext();
+    Lumen::ManualClock clock(40.0);
+    Lumen::Context* context = MakeContext(&clock);
+    CHECK(context != nullptr);
+    if (context == nullptr) { ImGui::DestroyContext(); return; }
+    Lumen::Theme theme = Lumen::GetTheme(context);
+    theme.scrollbar = {26.0f / 255.0f, 230.0f / 255.0f, 51.0f / 255.0f, 0.5f};
+    theme.scroll_smoothing = 18.0f;
+    Lumen::SetTheme(context, theme);
+    ImGui::GetIO().AddMousePosEvent(390.0f, 290.0f);
+    CHECK(RunSmoothFrame(context, clock, 1.0 / 60.0).vertices == 0);
+
+    // A wheel notch sets the logical target at once; the displayed offset eases toward it.
+    ImGui::GetIO().AddMousePosEvent(150.0f, 100.0f);
+    RunSmoothFrame(context, clock, 1.0 / 60.0);
+    ImGui::GetIO().AddMouseWheelEvent(0.0f, -1.0f);
+    RunSmoothFrame(context, clock, 1.0 / 60.0);
+    const float step = theme.spacing * theme.scroll_wheel_multiplier;
+    const std::uint64_t list = Lumen::MakeId(Lumen::GetFrameInfo(context)->root_id, "smooth");
+    ThumbSample thumb = RunSmoothFrame(context, clock, 1.0 / 60.0);
+    float displayed = DisplayedScroll(context);
+    CHECK(displayed > 0.0f && displayed < step);
+    CHECK(Lumen::NeedsFrame(context));
+    for (int i = 0; i < 30; ++i) thumb = RunSmoothFrame(context, clock, 1.0 / 60.0);
+    displayed = DisplayedScroll(context);
+    CHECK(std::abs(displayed - step) < 0.01f);
+    {
+        HostFrame host;
+        CHECK(Lumen::BeginFrame(context, {Lumen::Rect{0.0f, 0.0f, 400.0f, 300.0f}, {}, {1.0f, 1.0f}}, 1.0f / 60.0f));
+        CHECK(std::abs(Lumen::GetScrollOffset(context, list).y - step) < 0.01f);
+        BuildSmoothList(context);
+        CHECK(Lumen::EndFrame(context));
+    }
+
+    // The overlay thumb sits at the right edge, sized by view/content and placed by the offset.
+    CHECK(thumb.vertices > 0);
+    CHECK(thumb.bounds.max.x <= 300.0f && thumb.bounds.min.x >= 300.0f - 3.0f - 6.0f - 1.0f);
+    const float track = 200.0f - 6.0f;
+    const float length = track * 200.0f / 1200.0f;
+    CHECK(std::abs((thumb.bounds.max.y - thumb.bounds.min.y) - length) < 2.0f);
+    CHECK(std::abs(thumb.bounds.min.y - (3.0f + (track - length) * step / 1000.0f)) < 2.0f);
+
+    // Once the pointer leaves and the linger time passes, the thumb fades out.
+    ImGui::GetIO().AddMousePosEvent(390.0f, 290.0f);
+    for (int i = 0; i < 90; ++i) thumb = RunSmoothFrame(context, clock, 1.0 / 60.0);
+    CHECK(thumb.vertices == 0);
+
+    // With smoothing off the display follows the target in the same frame.
+    theme.scroll_smoothing = 0.0f;
+    Lumen::SetTheme(context, theme);
+    for (int i = 0; i < 20; ++i) RunSmoothFrame(context, clock, 1.0 / 60.0);
+    ImGui::GetIO().AddMousePosEvent(150.0f, 100.0f);
+    RunSmoothFrame(context, clock, 1.0 / 60.0);
+    ImGui::GetIO().AddMouseWheelEvent(0.0f, -1.0f);
+    RunSmoothFrame(context, clock, 1.0 / 60.0);
+    CHECK(std::abs(DisplayedScroll(context) - 2.0f * step) < 0.01f);
+    Lumen::DestroyContext(context);
+    ImGui::DestroyContext();
+}
+
+void GradientPainter(Lumen::Context*, Lumen::Canvas& canvas, void*) {
+    canvas.FillRectGradient(canvas.Bounds(), {1.0f, 0.0f, 0.0f, 1.0f}, {0.0f, 0.0f, 1.0f, 1.0f}, 0.0f, 12.0f);
+    canvas.FillRectGradient(canvas.Bounds(), {1.0f, 0.0f, 0.0f, 1.0f}, {0.0f, 0.0f, 1.0f, 1.0f},
+                            std::numeric_limits<float>::quiet_NaN(), 12.0f);
+}
+
+void BuildGradientNode(Lumen::Context* context) {
+    const Lumen::CustomPaint paint{GradientPainter, nullptr};
+    Lumen::NodeStyle style{};
+    style.width = 200.0f;
+    style.height = 60.0f;
+    style.opacity = 0.5f;
+    style.custom_paint = &paint;
+    CHECK(Lumen::BeginNode(context, "gradient", style));
+    Lumen::EndNode(context);
+}
+
+void TestCanvasGradient() {
+    ImGui::CreateContext();
+    Lumen::Context* context = MakeContext();
+    CHECK(context != nullptr);
+    if (context == nullptr) { ImGui::DestroyContext(); return; }
+    const Lumen::Viewport viewport{Lumen::Rect{0.0f, 0.0f, 400.0f, 300.0f}, {}, {1.0f, 1.0f}};
+    {
+    HostFrame host;
+    CHECK(Lumen::BeginFrame(context, viewport, 1.0f / 60.0f));
+    ImDrawList* draw_list = ImGui::GetWindowDrawList();
+    const int before = draw_list->VtxBuffer.Size;
+    BuildGradientNode(context);
+    CHECK(Lumen::EndFrame(context));
+    // Leftmost opaque vertex is red, rightmost blue, all at the node's 50% opacity.
+    int left = -1;
+    int right = -1;
+    for (int i = before; i < draw_list->VtxBuffer.Size; ++i) {
+        const ImDrawVert& v = draw_list->VtxBuffer[i];
+        const ImU32 alpha = (v.col >> IM_COL32_A_SHIFT) & 0xFFu;
+        if (alpha < 100u || alpha > 160u) continue;
+        if (left < 0 || v.pos.x < draw_list->VtxBuffer[left].pos.x) left = i;
+        if (right < 0 || v.pos.x > draw_list->VtxBuffer[right].pos.x) right = i;
+    }
+    CHECK(left >= 0 && right >= 0);
+    if (left >= 0 && right >= 0) {
+        const ImU32 l = draw_list->VtxBuffer[left].col;
+        const ImU32 r = draw_list->VtxBuffer[right].col;
+        CHECK(((l >> IM_COL32_R_SHIFT) & 0xFFu) > 200u && ((l >> IM_COL32_B_SHIFT) & 0xFFu) < 60u);
+        CHECK(((r >> IM_COL32_B_SHIFT) & 0xFFu) > 200u && ((r >> IM_COL32_R_SHIFT) & 0xFFu) < 60u);
+        CHECK(std::abs(static_cast<int>((l >> IM_COL32_A_SHIFT) & 0xFFu) - 128) <= 1);
+        CHECK(draw_list->VtxBuffer[left].pos.x < 10.0f && draw_list->VtxBuffer[right].pos.x > 190.0f);
+    }
+    }
+    Lumen::DestroyContext(context);
+    ImGui::DestroyContext();
+}
+
 int main() {
     TestViewportValidation();
     TestTreeBuildAndPaint();
@@ -2006,6 +2236,9 @@ int main() {
     TestLayerVisibilityAndClosing();
     TestFontLadder();
     TestCanvasPathsMeasureAndCurrentId();
+    TestFrameArenaGrowsAndHonoursCap();
+    TestSmoothScrollingAndOverlayScrollbars();
+    TestCanvasGradient();
     if (failures != 0) {
         std::fprintf(stderr, "%d Lumen UI test(s) failed.\n", failures);
         return EXIT_FAILURE;

@@ -57,7 +57,7 @@ This repository follows the frozen master plan in `Lumen_UI_Engine_Master_Plan_N
 
 ## Memory budget note (found while adding shadows)
 
-The default 1 MiB frame arena is nearly fully used by 2,000 plain labels (1,040,720 bytes before shadows, about 520 bytes per node: a 432-byte `Node` that embeds a full 256-byte `NodeStyle`, a 72-byte `RenderCommand`, and copied text). `NodeStyle` members are now ordered by size class so the shadow pointer costs no extra bytes, and `test_ui` keeps asserting the budget. Shrinking `Node` (hot/cold split) or a chunked arena is the next structural fix.
+The default 1 MiB frame arena is nearly fully used by 2,000 plain labels (1,040,720 bytes before shadows, about 520 bytes per node: a 432-byte `Node` that embeds a full 256-byte `NodeStyle`, a 72-byte `RenderCommand`, and copied text). `NodeStyle` members are now ordered by size class so the shadow pointer costs no extra bytes, and `test_ui` keeps asserting the budget. Resolved by the chunked arena below; `Node` itself is unchanged at 432 bytes.
 
 ## M5 — Layers and behaviors: behavior primitives started (integration delivered later in M8)
 
@@ -170,3 +170,12 @@ Gallery: a Text input card (live greeting, read-only field), a search field that
 Tests: `TestCanvasPathsMeasureAndCurrentId` (`lumen_ui_tests`); `TestTextFieldEditing` (`lumen_kit_tests`: typing, caret movement, word jumps, selection replacement, word delete, UTF-8 delete, capacity truncation, copy/cut/paste, auto-repeat, Space not activating, disabled). Mutation checks (no TextInput dispatch, no key repeat, no word movement) each fail the suite. ASan/UBSan clean. Headless renders of the filtered list, focused field with caret, icon row and icon toast badges were inspected.
 
 Not done (plan 8.7): the editor is hand-written rather than built on `imstb_textedit.h`; no undo/redo, multiline, double-click word selection, IME candidate placement or inline composition; Canvas has no dashed strokes, per-corner radii, joins/caps control or concave fill (plan 6.3); icons are a small built-in set, not compiled Lucide/Phosphor data (plan 6.6).
+
+## Chunked frame arena, smooth scrolling, overlay scrollbars and gradients — implemented, tested
+
+- Frame arena (handoff item 5, option B): chunks of at least `Config::frame_arena_bytes`, added on demand up to `Config::frame_arena_max_bytes` (default 16 MiB, at most 32 chunks) and kept across frames, so steady-state frames make no allocations. `DebugStats::arena_reserved_bytes` reports reservation; failures at the cap keep the old `arena_failed_allocations` semantics. `test_ui` now asserts at most 525 bytes per node for the 2,001-node grid, a 10,000-node frame succeeding without failures, no new reservation on the next identical frame, and clean failure with the cap equal to the first chunk.
+- Scrolling (plan 8.6, desktop profile, partial): `ScrollMemory` keeps a logical target and a displayed offset. The wheel and clamping move the target; the display eases toward it exponentially at `Theme::scroll_smoothing` per second (frame-rate independent; 0 or reduced motion is instant). `GetScrollOffset` reports the target; `SetScrollOffset` jumps both. No momentum, rubber banding or snapping.
+- Overlay scrollbars: overflowing scroll containers paint thumbs over their content (`Theme::scrollbar`, `scrollbar_thickness`), sized by view/content (minimum 24 px) and positioned by the displayed offset. They fade in on hover or for 0.8 s after scrolling and fade out on the colour transition. Thumbs cannot be dragged yet.
+- `Canvas::FillRectGradient()` (plan 6.2 Tier 0 gradients): linear, any angle, rounded corners, OKLab per vertex, antialiasing preserved. Radial and conic gradients are not implemented.
+- Gallery: gradient hero card and chart bars; the page and list show overlay scrollbars.
+- Tests: `TestFrameArenaGrowsAndHonoursCap`, `TestSmoothScrollingAndOverlayScrollbars`, `TestCanvasGradient`; mutation checks (instant-only scrolling, suppressed thumbs) fail the suite. ASan/UBSan clean; a headless gallery render was inspected.

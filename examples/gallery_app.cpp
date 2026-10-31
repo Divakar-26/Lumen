@@ -169,8 +169,10 @@ void PaintChart(Lumen::Context* context, Lumen::Canvas& canvas, void* data) {
                                            ChartValue(state->chart_seed, i), theme.reflow_transition);
         const float x = plot.min.x + slot * (static_cast<float>(i) + 0.5f) - 0.5f * bar_width;
         const float top = Lumen::Lerp(plot.max.y, plot.min.y, std::clamp(value, 0.0f, 1.05f));
-        const Lumen::Color color = i % 3 == 1 ? theme.accent : theme.primary_container;
-        canvas.FillRect(Lumen::Rect{{x, top}, {x + bar_width, plot.max.y}}, color, std::min(8.0f, 0.5f * bar_width));
+        const Lumen::Rect bar{{x, top}, {x + bar_width, plot.max.y}};
+        const float radius = std::min(8.0f, 0.5f * bar_width);
+        if (i % 3 == 1) canvas.FillRectGradient(bar, theme.accent, theme.inverse_primary, 0.5f * 3.14159265f, radius);
+        else canvas.FillRect(bar, theme.primary_container, radius);
         char label[8];
         std::snprintf(label, sizeof(label), "%c", static_cast<char>('A' + i));
         canvas.Text({x + 0.5f * bar_width - 4.0f, plot.max.y + 3.0f}, label, theme.muted_text, theme.caption_size);
@@ -235,10 +237,17 @@ void BuildAppBar(Lumen::Context* context, GalleryState* state) {
     Lumen::EndNode(context);
 }
 
+void PaintHero(Lumen::Context* context, Lumen::Canvas& canvas, void*) {
+    const Lumen::Theme theme = Lumen::GetTheme(context);
+    canvas.FillRectGradient(canvas.Bounds(), theme.primary_container, theme.secondary_container, 0.35f, theme.radius + 8.0f);
+}
+
 void BuildHero(Lumen::Context* context, const GalleryState* state) {
     const Lumen::Theme theme = Lumen::GetTheme(context);
+    const Lumen::CustomPaint hero_paint{PaintHero, nullptr};
     Lumen::NodeStyle hero = Kit::CardStyle(theme);
-    hero.background = theme.primary_container;
+    hero.has_background = false;
+    hero.custom_paint = &hero_paint;
     hero.padding = {24.0f, 28.0f, 24.0f, 28.0f};
     hero.gap = 10.0f;
     hero.radius = theme.radius + 8.0f;

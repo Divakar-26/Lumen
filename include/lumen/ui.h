@@ -149,6 +149,11 @@ struct Theme {
     float focus_ring_outset = 2.0f;
     float minimum_hit_target = 44.0f;
     float scroll_wheel_multiplier = 3.0f;
+    // Displayed scroll offsets approach their target at this rate per second (0 = instant).
+    float scroll_smoothing = 18.0f;
+    // Overlay scrollbar thumbs, shown while a container is scrolled or hovered.
+    float scrollbar_thickness = 6.0f;
+    Color scrollbar{0.5f, 0.5f, 0.5f, 0.35f};
     TweenSpec color_transition{};
     TweenSpec text_transition{};
     SpringSpec layout_spring = SpringSpec::Smooth();
@@ -187,6 +192,9 @@ public:
     void FillRect(Rect rect, Color color, float radius = 0.0f) noexcept;
     void StrokeRect(Rect rect, Color color, float radius = 0.0f, float thickness = 1.0f) noexcept;
     void FillCircle(Vec2 center, float radius, Color color) noexcept;
+    // Linear gradient from start to end along angle (radians; 0 = left to right, pi/2 = top to
+    // bottom), interpolated in OKLab at the mesh vertices. Rounded corners keep their antialiasing.
+    void FillRectGradient(Rect rect, Color start, Color end, float angle = 0.0f, float radius = 0.0f) noexcept;
     void StrokeCircle(Vec2 center, float radius, Color color, float thickness = 1.0f) noexcept;
     void Line(Vec2 from, Vec2 to, Color color, float thickness = 1.0f) noexcept;
     // font_size <= 0 uses the host's current ImGui font size. With a font ladder the size snaps to a rung.
@@ -366,7 +374,9 @@ Theme GetTheme(const Context* context) noexcept;
 bool IsThemeTransitioning(const Context* context) noexcept;
 
 // Scroll IDs are node IDs (MakeId(parent_node_id, key)). Scroll accessors are
-// valid during an active frame, including inside node callbacks. GetNodeRect exposes
+// valid during an active frame, including inside node callbacks. GetScrollOffset reports the
+// logical (target) offset; the displayed offset eases toward it at Theme::scroll_smoothing, and
+// SetScrollOffset jumps both. GetNodeRect exposes
 // the last completed layout until the next BeginFrame; it is primarily useful for
 // debugging, hit testing integrations, and layout tests.
 Vec2 GetScrollOffset(Context* context, std::uint64_t scroll_node_id) noexcept;
