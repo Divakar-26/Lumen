@@ -1,0 +1,388 @@
+#ifndef LUMEN_UI_H
+#define LUMEN_UI_H
+
+#include "lumen/lumen.h"
+
+namespace Lumen {
+
+enum class LayoutMode : std::uint8_t {
+    Column,
+    Row,
+    Stack,
+    Absolute,
+    Grid
+};
+
+enum class Align : std::uint8_t {
+    Auto,
+    Start,
+    Center,
+    End,
+    Stretch
+};
+
+enum class Justify : std::uint8_t {
+    Start,
+    Center,
+    End,
+    SpaceBetween,
+    SpaceAround
+};
+
+enum class TextAlign : std::uint8_t {
+    Start,
+    Center,
+    End
+};
+
+enum class ThemeKind : std::uint8_t {
+    Dark,
+    Light,
+    HighContrast,
+    Material
+};
+
+// Image textures are owned and uploaded by the host. Lumen only emits draw commands.
+enum class ImageFit : std::uint8_t { Stretch, Contain, Cover };
+
+enum class UIEventType : std::uint8_t {
+    PointerEnter,
+    PointerLeave,
+    PointerMove,
+    PointerDown,
+    PointerUp,
+    Click,
+    Wheel,
+    KeyDown,
+    KeyUp,
+    FocusGained,
+    FocusLost
+};
+
+enum class UIEventPhase : std::uint8_t {
+    Capture,
+    Target,
+    Bubble
+};
+
+struct UIEvent {
+    UIEventType type = UIEventType::PointerMove;
+    UIEventPhase phase = UIEventPhase::Target;
+    std::uint64_t pointer_id = 0u;
+    int button = -1;
+    ImGuiKey key = ImGuiKey_None;
+    Vec2 position{};
+    Vec2 delta{};
+    std::uint64_t target_id = 0u;
+    std::uint64_t current_target_id = 0u;
+    bool propagation_stopped = false;
+    bool default_prevented = false;
+
+    void StopPropagation() noexcept { propagation_stopped = true; }
+    void PreventDefault() noexcept { default_prevented = true; }
+};
+
+using EventHandler = void (*)(Context* context, UIEvent& event, void* user_data);
+
+// Interaction state from the last completed frame. The query is valid after
+// EndFrame and until the next BeginFrame rebuilds the frame-scoped node tree.
+struct NodeInteractionState {
+    bool found = false;
+    bool hovered = false;
+    bool pressed = false;
+    bool focused = false;
+    bool focus_visible = false;
+};
+
+struct Theme {
+    Color canvas{};
+    Color surface{};
+    Color surface_alt{};
+    Color text{};
+    Color muted_text{};
+    Color border{};
+    Color accent{};
+    Color accent_hover{};
+    Color accent_pressed{};
+    Color accent_text{};
+    Color success{};
+    Color warning{};
+    Color danger{};
+    // Material 3 roles without an older equivalent. Existing roles map as canvas = surface,
+    // surface = surface_container, surface_alt = surface_container_highest, text = on_surface,
+    // muted_text = on_surface_variant, border = outline, accent = primary, accent_text = on_primary.
+    Color surface_container_high{};
+    Color outline_variant{};
+    Color primary_container{};
+    Color secondary_container{};
+    Color on_secondary_container{};
+    Color inverse_surface{};
+    Color inverse_on_surface{};
+    Color inverse_primary{};
+    // Status accents that read on inverse_surface (e.g. toast badges).
+    Color inverse_info{};
+    Color inverse_success{};
+    Color inverse_warning{};
+    Color inverse_danger{};
+    float spacing = 12.0f;
+    float radius = 12.0f;
+    float caption_size = 14.0f;
+    float font_size = 16.0f;
+    float heading_size = 20.0f;
+    float title_size = 26.0f;
+    float button_min_height = 40.0f;
+    Insets button_padding{8.0f, 14.0f, 8.0f, 14.0f};
+    float focus_ring_width = 2.0f;
+    float focus_ring_outset = 2.0f;
+    float minimum_hit_target = 44.0f;
+    float scroll_wheel_multiplier = 3.0f;
+    TweenSpec color_transition{};
+    TweenSpec text_transition{};
+    SpringSpec layout_spring = SpringSpec::Smooth();
+    // Default drop-shadow tint (alpha is the peak opacity), used by nodes that enable a shadow
+    // without their own colour. Fully transparent disables themed shadows (e.g. High Contrast).
+    Color shadow{0.0f, 0.0f, 0.0f, 0.30f};
+    Color scrim{0.015f, 0.02f, 0.03f, 0.58f};
+    // Press feedback ink (e.g. Kit ripples). Alpha is the peak opacity; ink_transition times the spread.
+    Color ink{1.0f, 1.0f, 1.0f, 0.16f};
+    TweenSpec ink_transition{};
+    // Kit motion tokens: on/off controls, overlay entrances and exits, and items gliding to new slots.
+    TweenSpec toggle_transition{};
+    TweenSpec enter_transition{};
+    TweenSpec exit_transition{};
+    TweenSpec reflow_transition{};
+};
+
+// Custom paint (plan 6.9). A painter runs while EndFrame translates the render list: after the node's
+// shadow and fill, before its border, focus ring, image, text and children, and inside the same clip.
+// Coordinates are absolute. Canvas primitives apply the node's resolved opacity; DrawList() is raw.
+// Painters may read state, frame info and theme and request redraws, but cannot declare nodes or portals.
+class Canvas {
+public:
+    // With a context, Text() uses that context's font ladder.
+    Canvas(ImDrawList* draw_list, std::uint64_t node_id, Rect bounds, float opacity,
+           const Context* context = nullptr) noexcept;
+    ~Canvas();
+    Canvas(const Canvas&) = delete;
+    Canvas& operator=(const Canvas&) = delete;
+
+    std::uint64_t NodeId() const noexcept { return node_id_; }
+    Rect Bounds() const noexcept { return bounds_; }
+    float Opacity() const noexcept { return opacity_; }
+    ImDrawList* DrawList() const noexcept { return draw_list_; }
+
+    void FillRect(Rect rect, Color color, float radius = 0.0f) noexcept;
+    void StrokeRect(Rect rect, Color color, float radius = 0.0f, float thickness = 1.0f) noexcept;
+    void FillCircle(Vec2 center, float radius, Color color) noexcept;
+    void StrokeCircle(Vec2 center, float radius, Color color, float thickness = 1.0f) noexcept;
+    void Line(Vec2 from, Vec2 to, Color color, float thickness = 1.0f) noexcept;
+    // font_size <= 0 uses the host's current ImGui font size. With a font ladder the size snaps to a rung.
+    void Text(Vec2 position, const char* text, Color color, float font_size = 0.0f) noexcept;
+    // Clips intersect with the current clip. Clips left pushed when the painter returns are popped.
+    bool PushClip(Rect rect) noexcept;
+    void PopClip() noexcept;
+
+private:
+    ImDrawList* draw_list_ = nullptr;
+    const Context* context_ = nullptr;
+    std::uint64_t node_id_ = 0u;
+    Rect bounds_{};
+    float opacity_ = 1.0f;
+    int clip_depth_ = 0;
+};
+
+using Painter = void (*)(Context* context, Canvas& canvas, void* user_data);
+
+struct CustomPaint {
+    Painter painter = nullptr;
+    void* user_data = nullptr;
+};
+
+// Drop shadow (elevation). Tier-0: layered rounded rects, no shaders. A node paints a shadow when
+// blur > 0 (or, for a hovered pointer-enabled node when has_hover is set). Blur, offset and colour animate with
+// the theme colour transition whenever the resolved target changes, so hover "lift" is
+// interruptible like every other visual property. The shadow is painted under the node's own fill
+// and is clipped by ancestors that clip. Removing a shadow from a node snaps it off; to fade one
+// out, animate blur down to a small value instead.
+struct ShadowStyle {
+    float blur = 0.0f;           // logical px of softness; 0 = no shadow
+    float spread = 0.0f;         // grows (or shrinks, if negative) the shadow rect before blur
+    float offset_x = 0.0f;
+    float offset_y = 0.0f;
+    Color color{};               // used when has_color, otherwise Theme::shadow
+    bool has_color = false;
+    // Hover elevation. Applies to any hovered pointer-enabled node with has_hover set.
+    float hover_blur = 0.0f;
+    float hover_offset_y = 0.0f;
+    bool has_hover = false;
+};
+
+struct NodeStyle {
+    // Members are grouped by size class (floats, then pointers, then single bytes) so the struct has
+    // no interior padding: every node embeds a copy of its style in the fixed-size frame arena, and
+    // the 2,000-node test budget is tight. Always set members by name, never positionally.
+
+    // Box model
+    float width = -1.0f;
+    float height = -1.0f;
+    float min_width = 0.0f;
+    float min_height = 0.0f;
+    float max_width = 1000000.0f;
+    float max_height = 1000000.0f;
+    float flex_grow = 0.0f;
+    float flex_shrink = 1.0f;
+    float flex_basis = -1.0f;
+    Insets padding{};
+    Insets margin{};
+    Insets hit_slop{};
+    float gap = -1.0f;
+    // Appearance
+    float radius = -1.0f;
+    float border_width = 0.0f;
+    float font_size = 0.0f;
+    float opacity = 1.0f;
+    float x = 0.0f;
+    float y = 0.0f;
+    Color background{};
+    Color border_color{};
+    Color text_color{};
+    Color hover_background{};
+    Color pressed_background{};
+    Color disabled_background{};
+
+    EventHandler event_handler = nullptr;
+    void* event_user_data = nullptr;
+    // Optional drop shadow; see ShadowStyle. BeginNode copies the pointed-to value into the frame
+    // arena, so it only has to outlive the call. A pointer keeps the common no-shadow node small.
+    const ShadowStyle* shadow = nullptr;
+    // Optional custom painter; copied into the frame arena like shadow. user_data must stay valid until EndFrame.
+    const CustomPaint* custom_paint = nullptr;
+
+    LayoutMode layout = LayoutMode::Column;
+    std::uint8_t grid_columns = 2;
+    Align align_items = Align::Stretch;
+    Align align_self = Align::Auto;
+    Justify justify_content = Justify::Start;
+    TextAlign text_align = TextAlign::Start;
+    bool flex_wrap = false;
+    bool has_background = false;
+    bool has_border_color = false;
+    bool has_text_color = false;
+    bool has_hover_background = false;
+    bool has_pressed_background = false;
+    bool has_disabled_background = false;
+    bool disabled = false;
+    bool focusable = false;
+    bool clip_children = false;
+    bool scrollable_x = false;
+    bool scrollable_y = false;
+    bool animate_layout = true;
+    bool pointer_events = true;
+};
+
+// Where an unanchored portal sits in the safe viewport. Edge positions are inset by edge_margin.
+enum class PortalPin : std::uint8_t { Center, TopLeft, TopCenter, TopRight, BottomLeft, BottomCenter, BottomRight };
+
+// Portal content is declared into an independent layer root and painted after the base tree.
+// Anchor IDs refer to normal nodes; anchor_node_id == 0 places the portal by pin (Center by
+// default). offset moves anchored, pinned and centered portals alike; pinned and centered
+// portals are not clamped after the offset, so it can slide content in from an edge.
+struct PortalOptions {
+    std::uint64_t anchor_node_id = 0u;
+    Vec2 size{280.0f, 160.0f}; // size.y == 0 fits the content's measured height
+    Placement placement = Placement::Auto;
+    PlacementAlign align = PlacementAlign::Start;
+    Vec2 offset{};
+    bool flip = true;
+    bool clamp_to_safe_area = true;
+    bool scrim = false;
+    bool pin_to_top_right = false; // same as pin = PortalPin::TopRight
+    PortalPin pin = PortalPin::Center;
+    float edge_margin = 16.0f;
+};
+
+// Open/reopen a Context-managed layer. A positive timeout is used only when
+// DismissOnTimeout is set. Reopening during exit reverses Presence continuously.
+bool OpenLayer(Context* context, std::uint64_t layer_id, LayerKind kind,
+               std::uint8_t dismiss_policy = DismissNone, double timeout_seconds = 0.0) noexcept;
+// Start the Presence exit transition. IsLayerOpen remains true until exit completes.
+bool CloseLayer(Context* context, std::uint64_t layer_id) noexcept;
+bool IsLayerOpen(const Context* context, std::uint64_t layer_id) noexcept;
+// Presence progress of an open layer in [0, 1]: rises on enter, falls on exit, 0 when not open.
+float GetLayerVisibility(const Context* context, std::uint64_t layer_id) noexcept;
+// True while an open layer runs its exit transition (after CloseLayer, dismissal or timeout).
+bool IsLayerClosing(const Context* context, std::uint64_t layer_id) noexcept;
+// Portal roots are detached from normal layout, viewport-laid-out and painted in LayerStack
+// order after the base tree. Declare each open portal every frame, including its exit; pair
+// every successful BeginPortal with EndPortal. Nested portals and portal anchors are rejected.
+bool BeginPortal(Context* context, std::uint64_t layer_id, const PortalOptions& options,
+                 const NodeStyle& style = {}) noexcept;
+void EndPortal(Context* context) noexcept;
+
+using ClickHandler = void (*)(Context* context, std::uint64_t node_id, void* user_data);
+using CollectionBuilder = void (*)(Context* context, std::size_t item_index, void* user_data);
+
+// Font ladder (plan 2.7). The host loads one family at several pixel sizes (for example 14, 16, 20
+// and 24) into its ImGui atlas and registers them here. Text then snaps to the nearest rung and is
+// measured and drawn with that font at its baked size, so glyphs are never resampled. Up to 8 fonts;
+// null fonts are rejected. count == 0 restores the default: the current ImGui font scaled to size.
+// The fonts must outlive their registration.
+bool SetFontLadder(Context* context, ImFont* const* fonts, std::size_t count) noexcept;
+
+// Theme changes are applied by the host on the UI thread. Existing node styles
+// continue to override the theme; omitted values inherit theme tokens.
+void SetTheme(Context* context, ThemeKind kind) noexcept;
+void SetTheme(Context* context, const Theme& theme) noexcept;
+Theme GetTheme(const Context* context) noexcept;
+// True while the current appearance transition has unfinished visual tokens.
+bool IsThemeTransitioning(const Context* context) noexcept;
+
+// Scroll IDs are node IDs (MakeId(parent_node_id, key)). Scroll accessors are
+// valid during an active frame, including inside node callbacks. GetNodeRect exposes
+// the last completed layout until the next BeginFrame; it is primarily useful for
+// debugging, hit testing integrations, and layout tests.
+Vec2 GetScrollOffset(Context* context, std::uint64_t scroll_node_id) noexcept;
+bool SetScrollOffset(Context* context, std::uint64_t scroll_node_id, Vec2 offset) noexcept;
+bool GetNodeRect(const Context* context, std::uint64_t node_id, Rect* out_rect) noexcept;
+NodeInteractionState GetNodeState(const Context* context, std::uint64_t node_id) noexcept;
+
+// Buttons support pointer activation and Tab/Shift+Tab keyboard focus. Containers and labels can opt into
+// focus by setting NodeStyle::focusable. Enter/Space on any focused node dispatches a Click event (and
+// runs a button's click handler), so focusable custom controls are keyboard-activatable.
+// Tree declarations are frame-scoped and allocated from the context arena.
+// Every BeginNode must be paired with EndNode in the same frame.
+bool BeginNode(Context* context, const char* key, const NodeStyle& style = {}, const char* text = nullptr) noexcept;
+bool BeginNode(Context* context, std::uint64_t key, const NodeStyle& style = {}, const char* text = nullptr) noexcept;
+void EndNode(Context* context) noexcept;
+
+bool Label(Context* context, const char* key, const char* text, const NodeStyle& style = {}) noexcept;
+bool Label(Context* context, std::uint64_t key, const char* text, const NodeStyle& style = {}) noexcept;
+
+// Host-provided texture seam. A null texture paints the themed placeholder.
+// source_size is in logical pixels; set explicit style width/height to control the frame.
+bool Image(Context* context, const char* key, ImTextureID texture, Vec2 source_size,
+           ImageFit fit = ImageFit::Contain, const NodeStyle& style = {},
+           const char* accessible_label = nullptr) noexcept;
+bool Button(Context* context, const char* key, const char* text,
+            ClickHandler handler = nullptr, void* user_data = nullptr,
+            const NodeStyle& style = {}) noexcept;
+bool Button(Context* context, std::uint64_t key, const char* text,
+            ClickHandler handler = nullptr, void* user_data = nullptr,
+            const NodeStyle& style = {}) noexcept;
+
+// A fixed-height vertical virtual collection. The builder is called only for visible items plus cache_extent_items.
+// Each item is wrapped in a stable index-keyed node; builders must balance any nested BeginNode/EndNode calls.
+bool Collection(Context* context, const char* key, std::size_t item_count, float item_extent,
+                CollectionBuilder builder, void* user_data = nullptr,
+                const NodeStyle& style = {}, std::size_t cache_extent_items = 2u) noexcept;
+
+// Pointer IDs are host-independent; the single mouse pointer supplied by ImGui uses ID 1.
+// Capture can only be acquired from an active pointer event handler. The capturing node
+// continues to receive move/up events even when the pointer leaves its bounds.
+bool CapturePointer(Context* context, std::uint64_t node_id, std::uint64_t pointer_id = 1u) noexcept;
+bool ReleasePointer(Context* context, std::uint64_t node_id, std::uint64_t pointer_id = 1u) noexcept;
+bool HasPointerCapture(const Context* context, std::uint64_t node_id, std::uint64_t pointer_id = 1u) noexcept;
+
+} // namespace Lumen
+
+#endif
